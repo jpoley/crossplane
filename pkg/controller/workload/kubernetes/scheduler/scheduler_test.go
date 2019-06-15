@@ -37,6 +37,7 @@ import (
 	corev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/core/v1alpha1"
 	workloadv1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/workload/v1alpha1"
 	"github.com/crossplaneio/crossplane/pkg/controller/core"
+	"github.com/crossplaneio/crossplane/pkg/meta"
 	"github.com/crossplaneio/crossplane/pkg/test"
 )
 
@@ -47,9 +48,9 @@ const (
 )
 
 var (
-	errorBoom = errors.New("boom")
-	meta      = metav1.ObjectMeta{Namespace: namespace, Name: name, UID: uid}
-	ctx       = context.Background()
+	errorBoom  = errors.New("boom")
+	objectMeta = metav1.ObjectMeta{Namespace: namespace, Name: name, UID: uid}
+	ctx        = context.Background()
 
 	selectorAll     = &metav1.LabelSelector{}
 	selectorInvalid = &metav1.LabelSelector{
@@ -105,7 +106,7 @@ func withClusterSelector(s *metav1.LabelSelector) kubeAppModifier {
 }
 
 func kubeApp(rm ...kubeAppModifier) *workloadv1alpha1.KubernetesApplication {
-	r := &workloadv1alpha1.KubernetesApplication{ObjectMeta: meta}
+	r := &workloadv1alpha1.KubernetesApplication{ObjectMeta: objectMeta}
 
 	for _, m := range rm {
 		m(r)
@@ -228,7 +229,7 @@ func TestSchedule(t *testing.T) {
 			app: kubeApp(withClusterSelector(selectorAll)),
 			wantApp: kubeApp(
 				withClusterSelector(selectorAll),
-				withCluster(clusterA.ObjectReference()),
+				withCluster(meta.ReferenceTo(clusterA, computev1alpha1.KubernetesClusterGroupVersionKind)),
 				withState(workloadv1alpha1.KubernetesApplicationStateScheduled),
 				withConditions(
 					corev1alpha1.DeprecatedCondition{
@@ -320,11 +321,11 @@ func TestSchedule(t *testing.T) {
 			gotResult := tc.scheduler.schedule(ctx, tc.app)
 
 			if diff := cmp.Diff(tc.wantResult, gotResult); diff != "" {
-				t.Errorf("tc.scheduler.Schedule(...): want != got:\n%s", diff)
+				t.Errorf("tc.scheduler.Schedule(...): -want, +got:\n%s", diff)
 			}
 
 			if diff := cmp.Diff(tc.wantApp, tc.app); diff != "" {
-				t.Errorf("app: want != got:\n%s", diff)
+				t.Errorf("app: -want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -445,7 +446,7 @@ func TestReconcile(t *testing.T) {
 			}
 
 			if diff := cmp.Diff(tc.wantResult, gotResult); diff != "" {
-				t.Errorf("tc.rec.Reconcile(...): want != got:\n%s", diff)
+				t.Errorf("tc.rec.Reconcile(...): -want, +got:\n%s", diff)
 			}
 		})
 	}

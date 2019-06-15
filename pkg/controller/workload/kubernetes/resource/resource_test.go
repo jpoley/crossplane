@@ -43,6 +43,7 @@ import (
 	computev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/compute/v1alpha1"
 	corev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/core/v1alpha1"
 	"github.com/crossplaneio/crossplane/pkg/apis/workload/v1alpha1"
+	"github.com/crossplaneio/crossplane/pkg/meta"
 	"github.com/crossplaneio/crossplane/pkg/test"
 )
 
@@ -60,8 +61,8 @@ var (
 )
 
 var (
-	errorBoom = errors.New("boom")
-	meta      = metav1.ObjectMeta{
+	errorBoom  = errors.New("boom")
+	objectMeta = metav1.ObjectMeta{
 		Namespace:  namespace,
 		Name:       name,
 		UID:        uid,
@@ -76,6 +77,8 @@ var (
 		},
 	}
 
+	clusterRef = meta.ReferenceTo(cluster, computev1alpha1.KubernetesClusterGroupVersionKind)
+
 	apiServerURL, _ = url.Parse("https://example.org")
 	malformedURL    = ":wat:"
 
@@ -84,9 +87,9 @@ var (
 			Name:      "coolSecret",
 			Namespace: namespace,
 			Annotations: map[string]string{
-				RemoteControllerNamespace: meta.GetNamespace(),
-				RemoteControllerName:      meta.GetName(),
-				RemoteControllerUID:       string(meta.GetUID()),
+				RemoteControllerNamespace: objectMeta.GetNamespace(),
+				RemoteControllerName:      objectMeta.GetName(),
+				RemoteControllerUID:       string(objectMeta.GetUID()),
 			},
 		},
 		Data: map[string][]byte{
@@ -114,9 +117,9 @@ var (
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "coolService",
 			Annotations: map[string]string{
-				RemoteControllerNamespace: meta.GetNamespace(),
-				RemoteControllerName:      meta.GetName(),
-				RemoteControllerUID:       string(meta.GetUID()),
+				RemoteControllerNamespace: objectMeta.GetNamespace(),
+				RemoteControllerName:      objectMeta.GetName(),
+				RemoteControllerUID:       string(objectMeta.GetUID()),
 			},
 		},
 		Spec: corev1.ServiceSpec{
@@ -202,7 +205,7 @@ func withTemplate(t *unstructured.Unstructured) kubeARModifier {
 }
 
 func kubeAR(rm ...kubeARModifier) *v1alpha1.KubernetesApplicationResource {
-	r := &v1alpha1.KubernetesApplicationResource{ObjectMeta: meta}
+	r := &v1alpha1.KubernetesApplicationResource{ObjectMeta: objectMeta}
 
 	for _, m := range rm {
 		m(r)
@@ -222,7 +225,7 @@ func TestCreatePredicate(t *testing.T) {
 			event: event.CreateEvent{
 				Object: &v1alpha1.KubernetesApplicationResource{
 					Status: v1alpha1.KubernetesApplicationResourceStatus{
-						Cluster: cluster.ObjectReference(),
+						Cluster: clusterRef,
 					},
 				},
 			},
@@ -264,7 +267,7 @@ func TestUpdatePredicate(t *testing.T) {
 			event: event.UpdateEvent{
 				ObjectNew: &v1alpha1.KubernetesApplicationResource{
 					Status: v1alpha1.KubernetesApplicationResourceStatus{
-						Cluster: cluster.ObjectReference(),
+						Cluster: clusterRef,
 					},
 				},
 			},
@@ -367,12 +370,12 @@ func TestSync(t *testing.T) {
 						want := template(serviceWithoutNamespace)
 						want.SetNamespace(corev1.NamespaceDefault)
 						want.SetAnnotations(map[string]string{
-							RemoteControllerNamespace: meta.GetNamespace(),
-							RemoteControllerName:      meta.GetName(),
-							RemoteControllerUID:       string(meta.GetUID()),
+							RemoteControllerNamespace: objectMeta.GetNamespace(),
+							RemoteControllerName:      objectMeta.GetName(),
+							RemoteControllerUID:       string(objectMeta.GetUID()),
 						})
 						if diff := cmp.Diff(want, got); diff != "" {
-							return nil, errors.Errorf("mockSync: want != got: %s", diff)
+							return nil, errors.Errorf("mockSync: -want, +got: %s", diff)
 						}
 
 						return remoteStatus, nil
@@ -381,15 +384,15 @@ func TestSync(t *testing.T) {
 				secret: &mockSecretClient{
 					mockSync: func(_ context.Context, got *corev1.Secret) error {
 						want := secret.DeepCopy()
-						want.SetName(fmt.Sprintf("%s-%s", meta.GetName(), secret.GetName()))
+						want.SetName(fmt.Sprintf("%s-%s", objectMeta.GetName(), secret.GetName()))
 						want.SetNamespace(corev1.NamespaceDefault)
 						want.SetAnnotations(map[string]string{
-							RemoteControllerNamespace: meta.GetNamespace(),
-							RemoteControllerName:      meta.GetName(),
-							RemoteControllerUID:       string(meta.GetUID()),
+							RemoteControllerNamespace: objectMeta.GetNamespace(),
+							RemoteControllerName:      objectMeta.GetName(),
+							RemoteControllerUID:       string(objectMeta.GetUID()),
 						})
 						if diff := cmp.Diff(want, got); diff != "" {
-							return errors.Errorf("mockSync: want != got: %s", diff)
+							return errors.Errorf("mockSync: -want, +got: %s", diff)
 						}
 
 						return nil
@@ -502,11 +505,11 @@ func TestSync(t *testing.T) {
 			gotResult := tc.syncer.sync(ctx, tc.ar, tc.secrets)
 
 			if diff := cmp.Diff(tc.wantResult, gotResult); diff != "" {
-				t.Errorf("tc.syncer.sync(...): want != got:\n%s", diff)
+				t.Errorf("tc.syncer.sync(...): -want, +got:\n%s", diff)
 			}
 
 			if diff := cmp.Diff(tc.wantAR, tc.ar); diff != "" {
-				t.Errorf("app: want != got:\n%s", diff)
+				t.Errorf("app: -want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -528,12 +531,12 @@ func TestDelete(t *testing.T) {
 					mockDelete: func(_ context.Context, got *unstructured.Unstructured) error {
 						want := template(service)
 						want.SetAnnotations(map[string]string{
-							RemoteControllerNamespace: meta.GetNamespace(),
-							RemoteControllerName:      meta.GetName(),
-							RemoteControllerUID:       string(meta.GetUID()),
+							RemoteControllerNamespace: objectMeta.GetNamespace(),
+							RemoteControllerName:      objectMeta.GetName(),
+							RemoteControllerUID:       string(objectMeta.GetUID()),
 						})
 						if diff := cmp.Diff(want, got); diff != "" {
-							errors.Errorf("unstructured mockDelete: want != got: %s", diff)
+							errors.Errorf("unstructured mockDelete: -want, +got: %s", diff)
 						}
 
 						return nil
@@ -542,15 +545,15 @@ func TestDelete(t *testing.T) {
 				secret: &mockSecretClient{
 					mockDelete: func(_ context.Context, got *corev1.Secret) error {
 						want := secret.DeepCopy()
-						want.SetName(fmt.Sprintf("%s-%s", meta.GetName(), secret.GetName()))
+						want.SetName(fmt.Sprintf("%s-%s", objectMeta.GetName(), secret.GetName()))
 						want.SetNamespace(service.GetNamespace())
 						want.SetAnnotations(map[string]string{
-							RemoteControllerNamespace: meta.GetNamespace(),
-							RemoteControllerName:      meta.GetName(),
-							RemoteControllerUID:       string(meta.GetUID()),
+							RemoteControllerNamespace: objectMeta.GetNamespace(),
+							RemoteControllerName:      objectMeta.GetName(),
+							RemoteControllerUID:       string(objectMeta.GetUID()),
 						})
 						if diff := cmp.Diff(want, got); diff != "" {
-							return errors.Errorf("secret mockDelete: want != got: %s", diff)
+							return errors.Errorf("secret mockDelete: -want, +got: %s", diff)
 						}
 
 						return nil
@@ -648,11 +651,11 @@ func TestDelete(t *testing.T) {
 			gotResult := tc.deleter.delete(ctx, tc.ar, tc.secrets)
 
 			if diff := cmp.Diff(tc.wantResult, gotResult); diff != "" {
-				t.Errorf("tc.deleter.delete(...): want != got:\n%s", diff)
+				t.Errorf("tc.deleter.delete(...): -want, +got:\n%s", diff)
 			}
 
 			if diff := cmp.Diff(tc.wantAR, tc.ar); diff != "" {
-				t.Errorf("AR: want != got:\n%s", diff)
+				t.Errorf("AR: -want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -713,7 +716,7 @@ func TestSyncUnstructured(t *testing.T) {
 				existingService.GetNamespace(),
 				existingService.GetName(),
 				v1alpha1.KubernetesApplicationResourceKind,
-				meta.GetName(),
+				objectMeta.GetName(),
 			)),
 		},
 		{
@@ -736,7 +739,7 @@ func TestSyncUnstructured(t *testing.T) {
 			}
 
 			if diff := cmp.Diff(tc.wantStatus, gotStatus); diff != "" {
-				t.Errorf("tc.unstructured.sync(...): want != got:\n%s", diff)
+				t.Errorf("tc.unstructured.sync(...): -want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -764,7 +767,7 @@ func TestGetRemoteStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := getRemoteStatus(tc.remote)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
-				t.Errorf("getRemoteStatus(...): want != got:\n%s", diff)
+				t.Errorf("getRemoteStatus(...): -want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -889,7 +892,7 @@ func TestSyncSecret(t *testing.T) {
 				existingSecret.GetNamespace(),
 				existingSecret.GetName(),
 				v1alpha1.KubernetesApplicationResourceKind,
-				meta.GetName(),
+				objectMeta.GetName(),
 			)),
 		},
 		{
@@ -1009,7 +1012,7 @@ func TestConnectConfig(t *testing.T) {
 								Name:      cluster.GetName(),
 							}
 							if diff := cmp.Diff(want, got); diff != "" {
-								return errors.Errorf("MockGet(Secret): want != got: %s", diff)
+								return errors.Errorf("MockGet(Secret): -want, +got: %s", diff)
 							}
 							*actual = *cluster
 
@@ -1019,7 +1022,7 @@ func TestConnectConfig(t *testing.T) {
 								Name:      secret.GetName(),
 							}
 							if diff := cmp.Diff(want, got); diff != "" {
-								return errors.Errorf("MockGet(Secret): want != got: %s", diff)
+								return errors.Errorf("MockGet(Secret): -want, +got: %s", diff)
 							}
 
 							*actual = *secret
@@ -1030,7 +1033,7 @@ func TestConnectConfig(t *testing.T) {
 				},
 				options: client.Options{Mapper: mockRESTMapper{}},
 			},
-			ar: kubeAR(withCluster(cluster.ObjectReference())),
+			ar: kubeAR(withCluster(clusterRef)),
 			wantConfig: &rest.Config{
 				Host:     apiServerURL.String(),
 				Username: string(secret.Data[corev1alpha1.ResourceCredentialsSecretUserKey]),
@@ -1050,7 +1053,7 @@ func TestConnectConfig(t *testing.T) {
 			connecter: &clusterConnecter{},
 			ar:        kubeAR(),
 			wantErr: errors.Errorf("%s %s/%s is not scheduled",
-				v1alpha1.KubernetesApplicationResourceKind, meta.GetNamespace(), meta.GetName()),
+				v1alpha1.KubernetesApplicationResourceKind, objectMeta.GetNamespace(), objectMeta.GetName()),
 		},
 		{
 			name: "GetKubernetesClusterFailed",
@@ -1058,7 +1061,7 @@ func TestConnectConfig(t *testing.T) {
 				kube:    &test.MockClient{MockGet: test.NewMockGetFn(errorBoom)},
 				options: client.Options{Mapper: mockRESTMapper{}},
 			},
-			ar: kubeAR(withCluster(cluster.ObjectReference())),
+			ar: kubeAR(withCluster(clusterRef)),
 			wantErr: errors.Wrapf(errorBoom, "cannot get %s %s/%s",
 				computev1alpha1.KubernetesClusterKind, cluster.GetNamespace(), cluster.GetName()),
 		},
@@ -1078,7 +1081,7 @@ func TestConnectConfig(t *testing.T) {
 				},
 				options: client.Options{Mapper: mockRESTMapper{}},
 			},
-			ar:      kubeAR(withCluster(cluster.ObjectReference())),
+			ar:      kubeAR(withCluster(clusterRef)),
 			wantErr: errors.Wrapf(errorBoom, "cannot get secret %s/%s", secret.GetNamespace(), secret.GetName()),
 		},
 		{
@@ -1096,7 +1099,7 @@ func TestConnectConfig(t *testing.T) {
 				},
 				options: client.Options{Mapper: mockRESTMapper{}},
 			},
-			ar:      kubeAR(withCluster(cluster.ObjectReference())),
+			ar:      kubeAR(withCluster(clusterRef)),
 			wantErr: errors.WithStack(errors.Errorf("cannot parse Kubernetes endpoint as URL: parse %s: missing protocol scheme", malformedURL)),
 		},
 	}
@@ -1110,7 +1113,7 @@ func TestConnectConfig(t *testing.T) {
 			}
 
 			if diff := cmp.Diff(tc.wantConfig, gotConfig); diff != "" {
-				t.Errorf("tc.connecter.config(...): want != got:\n%s", diff)
+				t.Errorf("tc.connecter.config(...): -want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -1130,7 +1133,7 @@ func TestConnect(t *testing.T) {
 				kube:    &test.MockClient{MockGet: test.NewMockGetFn(nil)},
 				options: client.Options{Mapper: mockRESTMapper{}},
 			},
-			ar: kubeAR(withCluster(cluster.ObjectReference())),
+			ar: kubeAR(withCluster(clusterRef)),
 
 			// This empty struct is 'identical' to the actual, populated struct
 			// returned by tc.connecter.connect() because we do not compare
@@ -1145,7 +1148,7 @@ func TestConnect(t *testing.T) {
 			connecter: &clusterConnecter{
 				kube: &test.MockClient{MockGet: test.NewMockGetFn(errorBoom)},
 			},
-			ar: kubeAR(withCluster(cluster.ObjectReference())),
+			ar: kubeAR(withCluster(clusterRef)),
 			wantErr: errors.Wrapf(errorBoom, "cannot create Kubernetes client configuration: cannot get %s %s/%s",
 				computev1alpha1.KubernetesClusterKind, cluster.GetNamespace(), cluster.GetName()),
 		},
@@ -1161,7 +1164,7 @@ func TestConnect(t *testing.T) {
 			}
 
 			if diff := cmp.Diff(tc.wantSD, gotSD, cmpopts.IgnoreUnexported(remoteCluster{})); diff != "" {
-				t.Errorf("tc.connecter.connect(...): want != got:\n%s", diff)
+				t.Errorf("tc.connecter.connect(...): -want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -1271,7 +1274,7 @@ func TestReconcile(t *testing.T) {
 						)
 
 						if diff := cmp.Diff(want, got); diff != "" {
-							return errors.Errorf("MockUpdate: want != got: %s", diff)
+							return errors.Errorf("MockUpdate: -want, +got: %s", diff)
 						}
 
 						return nil
@@ -1297,7 +1300,7 @@ func TestReconcile(t *testing.T) {
 						want := kubeAR(withDeletionTimestamp(deleteTime))
 
 						if diff := cmp.Diff(want, got); diff != "" {
-							return errors.Errorf("MockUpdate: want != got: %s", diff)
+							return errors.Errorf("MockUpdate: -want, +got: %s", diff)
 						}
 
 						return nil
@@ -1368,7 +1371,7 @@ func TestReconcile(t *testing.T) {
 			}
 
 			if diff := cmp.Diff(tc.wantResult, gotResult); diff != "" {
-				t.Errorf("tc.rec.Reconcile(...): want != got:\n%s", diff)
+				t.Errorf("tc.rec.Reconcile(...): -want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -1427,11 +1430,11 @@ func TestGetConnectionSecrets(t *testing.T) {
 			gotSecrets := tc.rec.getConnectionSecrets(ctx, tc.ar)
 
 			if diff := cmp.Diff(tc.wantSecrets, gotSecrets); diff != "" {
-				t.Errorf("tc.rec.getConnectionSecrets(...): want != got:\n%s", diff)
+				t.Errorf("tc.rec.getConnectionSecrets(...): -want, +got:\n%s", diff)
 			}
 
 			if diff := cmp.Diff(tc.wantAR, tc.ar); diff != "" {
-				t.Errorf("AR: want != got:\n%s", diff)
+				t.Errorf("AR: -want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -1496,7 +1499,7 @@ func TestHasController(t *testing.T) {
 	}
 }
 
-func TestHasSameController(t *testing.T) {
+func TestHaveSameController(t *testing.T) {
 	cases := []struct {
 		name string
 		a    metav1.Object
@@ -1533,7 +1536,7 @@ func TestHasSameController(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := hasSameController(tc.a, tc.b)
+			got := haveSameController(tc.a, tc.b)
 			if got != tc.want {
 				t.Errorf("hasController(...): want %t, got %t", tc.want, got)
 			}
