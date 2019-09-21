@@ -4,7 +4,11 @@ metadata:
   name: gitlab-redis
   namespace: default
 spec:
-  classReference:
+  classRef:
+    kind: CloudMemorystoreInstanceClass
+    apiVersion: cache.gcp.crossplane.io/v1alpha2
     name: standard-gcp-redis
     namespace: crossplane-system
+  writeConnectionSecretToRef:
+    name: gitlab-redis
   engineVersion: "3.2"

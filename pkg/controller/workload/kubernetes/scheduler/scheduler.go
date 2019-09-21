@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Crossplane Authors.
+Copyright 2019 The Crossplane Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,30 +22,23 @@ import (
 
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	computev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/compute/v1alpha1"
-	"github.com/crossplaneio/crossplane/pkg/apis/workload/v1alpha1"
-	workloadv1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/workload/v1alpha1"
-	"github.com/crossplaneio/crossplane/pkg/controller/core"
-	"github.com/crossplaneio/crossplane/pkg/logging"
-	"github.com/crossplaneio/crossplane/pkg/meta"
+	runtimev1alpha1 "github.com/crossplaneio/crossplane-runtime/apis/core/v1alpha1"
+	"github.com/crossplaneio/crossplane-runtime/pkg/logging"
+	"github.com/crossplaneio/crossplane-runtime/pkg/meta"
+	computev1alpha1 "github.com/crossplaneio/crossplane/apis/compute/v1alpha1"
+	workloadv1alpha1 "github.com/crossplaneio/crossplane/apis/workload/v1alpha1"
 )
 
 const (
 	controllerName   = "scheduler.workload.crossplane.io"
 	reconcileTimeout = 1 * time.Minute
-
-	reasonUnschedulable = "failed to schedule " + workloadv1alpha1.KubernetesApplicationKind
-	errorNoclusters     = "no clusters matched label selector"
+	requeueOnSuccess = 2 * time.Minute
 )
 
 var log = logging.Logger.WithName("controller." + controllerName)
@@ -61,25 +54,15 @@ type roundRobinScheduler struct {
 
 func (s *roundRobinScheduler) schedule(ctx context.Context, app *workloadv1alpha1.KubernetesApplication) reconcile.Result {
 	app.Status.State = workloadv1alpha1.KubernetesApplicationStatePending
-	app.Status.SetPending()
-
-	sel, err := metav1.LabelSelectorAsSelector(app.Spec.ClusterSelector)
-	if err != nil {
-		app.Status.SetFailed(reasonUnschedulable, err.Error())
-		return reconcile.Result{Requeue: true}
-	}
 
 	clusters := &computev1alpha1.KubernetesClusterList{}
-	if err := s.kube.List(ctx, &client.ListOptions{LabelSelector: sel}, clusters); err != nil {
-		app.Status.SetFailed(reasonUnschedulable, err.Error())
+	if err := s.kube.List(ctx, clusters, client.MatchingLabels(app.Spec.ClusterSelector.MatchLabels)); err != nil {
+		app.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
 		return reconcile.Result{Requeue: true}
 	}
 
 	if len(clusters.Items) == 0 {
-		// TODO(negz): Do we really want to set the status to failed here? We
-		// 'failed' to schedule only because no clusters match yet. Remaining in
-		// pending may be more appropriate.
-		app.Status.SetFailed(reasonUnschedulable, errorNoclusters)
+		app.Status.SetConditions(runtimev1alpha1.ReconcileSuccess())
 		return reconcile.Result{Requeue: true}
 	}
 
@@ -90,8 +73,7 @@ func (s *roundRobinScheduler) schedule(ctx context.Context, app *workloadv1alpha
 
 	app.Status.Cluster = meta.ReferenceTo(&cluster, computev1alpha1.KubernetesClusterGroupVersionKind)
 	app.Status.State = workloadv1alpha1.KubernetesApplicationStateScheduled
-	app.Status.UnsetAllDeprecatedConditions()
-	app.Status.SetReady()
+	app.Status.SetConditions(runtimev1alpha1.ReconcileSuccess())
 
 	return reconcile.Result{Requeue: false}
 }
@@ -116,24 +98,23 @@ func UpdatePredicate(e event.UpdateEvent) bool {
 	return wl.Status.Cluster == nil
 }
 
-// Add the KubernetesApplication scheduler reconciler to the supplied manager.
-func Add(mgr manager.Manager) error {
+// Controller is responsible for adding the Scheduler
+// controller and its corresponding reconciler to the manager with any runtime configuration.
+type Controller struct{}
+
+// SetupWithManager creates a new Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
+// and Start it when the Manager is Started.
+func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 	r := &Reconciler{
 		kube:      mgr.GetClient(),
 		scheduler: &roundRobinScheduler{kube: mgr.GetClient()},
 	}
 
-	c, err := controller.New(controllerName, mgr, controller.Options{Reconciler: r})
-	if err != nil {
-		return err
-	}
-
-	err = c.Watch(
-		&source.Kind{Type: &workloadv1alpha1.KubernetesApplication{}},
-		&handler.EnqueueRequestForObject{},
-		&predicate.Funcs{CreateFunc: CreatePredicate, UpdateFunc: UpdatePredicate},
-	)
-	return errors.Wrapf(err, "cannot watch for %s", v1alpha1.KubernetesApplicationKind)
+	return ctrl.NewControllerManagedBy(mgr).
+		Named(controllerName).
+		For(&workloadv1alpha1.KubernetesApplication{}).
+		WithEventFilter(&predicate.Funcs{CreateFunc: CreatePredicate, UpdateFunc: UpdatePredicate}).
+		Complete(r)
 }
 
 // A Reconciler schedules KubernetesApplications to KubernetesClusters.
@@ -165,7 +146,7 @@ func (r *Reconciler) Reconcile(req reconcile.Request) (reconcile.Result, error) 
 
 	// Someone already scheduled this application.
 	if app.Status.Cluster != nil {
-		return reconcile.Result{RequeueAfter: core.RequeueOnSuccess}, nil
+		return reconcile.Result{RequeueAfter: requeueOnSuccess}, nil
 	}
 
 	return r.scheduler.schedule(ctx, app), errors.Wrapf(r.kube.Update(ctx, app), "cannot update %s %s", workloadv1alpha1.KubernetesApplicationKind, req.NamespacedName)

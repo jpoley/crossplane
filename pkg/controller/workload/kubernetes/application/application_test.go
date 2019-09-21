@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Crossplane Authors.
+Copyright 2019 The Crossplane Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,12 +32,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	computev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/compute/v1alpha1"
-	corev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/core/v1alpha1"
-	"github.com/crossplaneio/crossplane/pkg/apis/workload/v1alpha1"
-	"github.com/crossplaneio/crossplane/pkg/controller/core"
-	"github.com/crossplaneio/crossplane/pkg/meta"
-	"github.com/crossplaneio/crossplane/pkg/test"
+	runtimev1alpha1 "github.com/crossplaneio/crossplane-runtime/apis/core/v1alpha1"
+	"github.com/crossplaneio/crossplane-runtime/pkg/meta"
+	"github.com/crossplaneio/crossplane-runtime/pkg/test"
+	computev1alpha1 "github.com/crossplaneio/crossplane/apis/compute/v1alpha1"
+	"github.com/crossplaneio/crossplane/apis/workload/v1alpha1"
 )
 
 const (
@@ -88,16 +87,10 @@ var (
 	}
 )
 
-// Frequently used conditions.
-var (
-	ready   = corev1alpha1.DeprecatedCondition{Type: corev1alpha1.DeprecatedReady, Status: corev1.ConditionTrue}
-	pending = corev1alpha1.DeprecatedCondition{Type: corev1alpha1.DeprecatedPending, Status: corev1.ConditionTrue}
-)
-
 type kubeAppModifier func(*v1alpha1.KubernetesApplication)
 
-func withConditions(c ...corev1alpha1.DeprecatedCondition) kubeAppModifier {
-	return func(r *v1alpha1.KubernetesApplication) { r.Status.DeprecatedConditionedStatus.Conditions = c }
+func withConditions(c ...runtimev1alpha1.Condition) kubeAppModifier {
+	return func(r *v1alpha1.KubernetesApplication) { r.Status.SetConditions(c...) }
 }
 
 func withState(s v1alpha1.KubernetesApplicationState) kubeAppModifier {
@@ -267,11 +260,11 @@ func TestSync(t *testing.T) {
 			wantApp: kubeApp(
 				withTemplates(templateA),
 				withState(v1alpha1.KubernetesApplicationStateScheduled),
-				withConditions(pending),
+				withConditions(runtimev1alpha1.ReconcileSuccess()),
 				withDesiredResources(1),
 				withSubmittedResources(0),
 			),
-			wantResult: reconcile.Result{RequeueAfter: core.RequeueOnWait},
+			wantResult: reconcile.Result{RequeueAfter: requeueOnWait},
 		},
 		{
 			name: "PartialResourcesSubmitted",
@@ -293,11 +286,11 @@ func TestSync(t *testing.T) {
 			wantApp: kubeApp(
 				withTemplates(templateA, templateB),
 				withState(v1alpha1.KubernetesApplicationStatePartial),
-				withConditions(pending),
+				withConditions(runtimev1alpha1.ReconcileSuccess()),
 				withDesiredResources(2),
 				withSubmittedResources(1),
 			),
-			wantResult: reconcile.Result{RequeueAfter: core.RequeueOnWait},
+			wantResult: reconcile.Result{RequeueAfter: requeueOnWait},
 		},
 		{
 			name: "AllResourcesSubmitted",
@@ -314,7 +307,7 @@ func TestSync(t *testing.T) {
 			wantApp: kubeApp(
 				withTemplates(templateA, templateB),
 				withState(v1alpha1.KubernetesApplicationStateSubmitted),
-				withConditions(ready),
+				withConditions(runtimev1alpha1.ReconcileSuccess()),
 				withDesiredResources(2),
 				withSubmittedResources(2),
 			),
@@ -330,14 +323,7 @@ func TestSync(t *testing.T) {
 			wantApp: kubeApp(
 				withTemplates(templateA),
 				withState(v1alpha1.KubernetesApplicationStateFailed),
-				withConditions(
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonGCResources,
-						Message: errorBoom.Error(),
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 				withDesiredResources(1),
 			),
 			wantResult: reconcile.Result{Requeue: true},
@@ -352,14 +338,7 @@ func TestSync(t *testing.T) {
 			wantApp: kubeApp(
 				withTemplates(templateA),
 				withState(v1alpha1.KubernetesApplicationStateFailed),
-				withConditions(
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonSyncingResource,
-						Message: errorBoom.Error(),
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 				withDesiredResources(1),
 			),
 			wantResult: reconcile.Result{Requeue: true},
@@ -473,7 +452,7 @@ func TestGarbageCollect(t *testing.T) {
 			name: "SuccessfulResourceDeletion",
 			gc: &applicationResourceGarbageCollector{
 				kube: &test.MockClient{
-					MockList: func(_ context.Context, _ *client.ListOptions, obj runtime.Object) error {
+					MockList: func(_ context.Context, obj runtime.Object, _ ...client.ListOption) error {
 						ref := metav1.NewControllerRef(kubeApp(), v1alpha1.KubernetesApplicationGroupVersionKind)
 						m := objectMeta.DeepCopy()
 						m.SetOwnerReferences([]metav1.OwnerReference{*ref})
@@ -492,7 +471,7 @@ func TestGarbageCollect(t *testing.T) {
 			name: "FailedResourceDeletion",
 			gc: &applicationResourceGarbageCollector{
 				kube: &test.MockClient{
-					MockList: func(_ context.Context, _ *client.ListOptions, obj runtime.Object) error {
+					MockList: func(_ context.Context, obj runtime.Object, _ ...client.ListOption) error {
 						ref := metav1.NewControllerRef(kubeApp(), v1alpha1.KubernetesApplicationGroupVersionKind)
 						m := objectMeta.DeepCopy()
 						m.SetOwnerReferences([]metav1.OwnerReference{*ref})
@@ -507,14 +486,7 @@ func TestGarbageCollect(t *testing.T) {
 			app: kubeApp(withTemplates(templateA)),
 			wantApp: kubeApp(
 				withTemplates(templateA),
-				withConditions(
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonGCResources,
-						Message: errorBoom.Error(),
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 			),
 		},
 		{
@@ -530,7 +502,7 @@ func TestGarbageCollect(t *testing.T) {
 			name: "ResourceNotControlledByApplication",
 			gc: &applicationResourceGarbageCollector{
 				kube: &test.MockClient{
-					MockList: func(_ context.Context, _ *client.ListOptions, obj runtime.Object) error {
+					MockList: func(_ context.Context, obj runtime.Object, _ ...client.ListOption) error {
 						*obj.(*v1alpha1.KubernetesApplicationResourceList) = v1alpha1.KubernetesApplicationResourceList{
 							Items: []v1alpha1.KubernetesApplicationResource{{ObjectMeta: objectMeta}},
 						}
@@ -545,7 +517,7 @@ func TestGarbageCollect(t *testing.T) {
 			name: "ResourceIsTemplated",
 			gc: &applicationResourceGarbageCollector{
 				kube: &test.MockClient{
-					MockList: func(_ context.Context, _ *client.ListOptions, obj runtime.Object) error {
+					MockList: func(_ context.Context, obj runtime.Object, _ ...client.ListOption) error {
 						ref := metav1.NewControllerRef(kubeApp(), v1alpha1.KubernetesApplicationGroupVersionKind)
 						m := templateA.ObjectMeta.DeepCopy()
 						m.SetOwnerReferences([]metav1.OwnerReference{*ref})
@@ -614,7 +586,7 @@ func TestSyncApplicationResource(t *testing.T) {
 				},
 			},
 			template: resourceA,
-			wantErr: errors.WithStack(errors.Errorf("cannot sync %s: could not mutate object for update: %s %s exists and is not controlled by %s %s",
+			wantErr: errors.WithStack(errors.Errorf("cannot sync %s: %s %s exists and is not controlled by %s %s",
 				v1alpha1.KubernetesApplicationResourceKind,
 				v1alpha1.KubernetesApplicationResourceKind,
 				templateA.GetName(),
@@ -629,7 +601,7 @@ func TestSyncApplicationResource(t *testing.T) {
 				kube: &test.MockClient{MockGet: test.NewMockGetFn(errorBoom)},
 			},
 			template: resourceA,
-			wantErr:  errors.Wrapf(errorBoom, "cannot sync %s: could not get object", v1alpha1.KubernetesApplicationResourceKind),
+			wantErr:  errors.Wrapf(errorBoom, "cannot sync %s", v1alpha1.KubernetesApplicationResourceKind),
 		},
 	}
 

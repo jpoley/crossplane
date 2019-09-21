@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Crossplane Authors.
+Copyright 2019 The Crossplane Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,11 +40,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	computev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/compute/v1alpha1"
-	corev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/core/v1alpha1"
-	"github.com/crossplaneio/crossplane/pkg/apis/workload/v1alpha1"
-	"github.com/crossplaneio/crossplane/pkg/meta"
-	"github.com/crossplaneio/crossplane/pkg/test"
+	runtimev1alpha1 "github.com/crossplaneio/crossplane-runtime/apis/core/v1alpha1"
+	"github.com/crossplaneio/crossplane-runtime/pkg/meta"
+	"github.com/crossplaneio/crossplane-runtime/pkg/test"
+	computev1alpha1 "github.com/crossplaneio/crossplane/apis/compute/v1alpha1"
+	"github.com/crossplaneio/crossplane/apis/workload/v1alpha1"
 )
 
 const (
@@ -52,12 +52,6 @@ const (
 	name            = "coolAR"
 	uid             = types.UID("definitely-a-uuid")
 	resourceVersion = "coolVersion"
-)
-
-// Frequently used conditions.
-var (
-	deleting = corev1alpha1.DeprecatedCondition{Type: corev1alpha1.DeprecatedDeleting, Status: corev1.ConditionTrue}
-	ready    = corev1alpha1.DeprecatedCondition{Type: corev1alpha1.DeprecatedReady, Status: corev1.ConditionTrue}
 )
 
 var (
@@ -72,8 +66,10 @@ var (
 
 	cluster = &computev1alpha1.KubernetesCluster{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "coolCluster"},
-		Status: corev1alpha1.ResourceClaimStatus{
-			CredentialsSecretRef: corev1.LocalObjectReference{Name: secret.GetName()},
+		Spec: computev1alpha1.KubernetesClusterSpec{
+			ResourceClaimSpec: runtimev1alpha1.ResourceClaimSpec{
+				WriteConnectionSecretToReference: corev1.LocalObjectReference{Name: secret.GetName()},
+			},
 		},
 	}
 
@@ -93,13 +89,13 @@ var (
 			},
 		},
 		Data: map[string][]byte{
-			corev1alpha1.ResourceCredentialsSecretEndpointKey:   []byte(apiServerURL.String()),
-			corev1alpha1.ResourceCredentialsSecretUserKey:       []byte("user"),
-			corev1alpha1.ResourceCredentialsSecretPasswordKey:   []byte("password"),
-			corev1alpha1.ResourceCredentialsSecretCAKey:         []byte("secretCA"),
-			corev1alpha1.ResourceCredentialsSecretClientCertKey: []byte("clientCert"),
-			corev1alpha1.ResourceCredentialsSecretClientKeyKey:  []byte("clientKey"),
-			corev1alpha1.ResourceCredentialsTokenKey:            []byte("token"),
+			runtimev1alpha1.ResourceCredentialsSecretEndpointKey:   []byte(apiServerURL.String()),
+			runtimev1alpha1.ResourceCredentialsSecretUserKey:       []byte("user"),
+			runtimev1alpha1.ResourceCredentialsSecretPasswordKey:   []byte("password"),
+			runtimev1alpha1.ResourceCredentialsSecretCAKey:         []byte("secretCA"),
+			runtimev1alpha1.ResourceCredentialsSecretClientCertKey: []byte("clientCert"),
+			runtimev1alpha1.ResourceCredentialsSecretClientKeyKey:  []byte("clientKey"),
+			runtimev1alpha1.ResourceCredentialsTokenKey:            []byte("token"),
 		},
 	}
 
@@ -110,6 +106,23 @@ var (
 	}()
 
 	secretLocalObjectRef = corev1.LocalObjectReference{Name: secret.GetName()}
+
+	secretWithExplicitType = &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "basicAuthSecret",
+			Namespace: namespace,
+			Annotations: map[string]string{
+				RemoteControllerNamespace: objectMeta.GetNamespace(),
+				RemoteControllerName:      objectMeta.GetName(),
+				RemoteControllerUID:       string(objectMeta.GetUID()),
+			},
+		},
+		Data: map[string][]byte{
+			runtimev1alpha1.ResourceCredentialsSecretUserKey:     []byte("user"),
+			runtimev1alpha1.ResourceCredentialsSecretPasswordKey: []byte("password"),
+		},
+		Type: corev1.SecretTypeBasicAuth,
+	}
 
 	serviceWithoutNamespace = &corev1.Service{
 		// Note we purposefully omit the namespace here in order to test our
@@ -168,8 +181,8 @@ func withFinalizers(f ...string) kubeARModifier {
 	return func(r *v1alpha1.KubernetesApplicationResource) { r.ObjectMeta.Finalizers = f }
 }
 
-func withConditions(c ...corev1alpha1.DeprecatedCondition) kubeARModifier {
-	return func(r *v1alpha1.KubernetesApplicationResource) { r.Status.DeprecatedConditionedStatus.Conditions = c }
+func withConditions(c ...runtimev1alpha1.Condition) kubeARModifier {
+	return func(r *v1alpha1.KubernetesApplicationResource) { r.Status.SetConditions(c...) }
 }
 
 func withState(s v1alpha1.KubernetesApplicationResourceState) kubeARModifier {
@@ -404,11 +417,11 @@ func TestSync(t *testing.T) {
 			wantAR: kubeAR(
 				withTemplate(template(serviceWithoutNamespace)),
 				withFinalizers(finalizerName),
-				withConditions(ready),
+				withConditions(runtimev1alpha1.ReconcileSuccess()),
 				withState(v1alpha1.KubernetesApplicationResourceStateSubmitted),
 				withRemoteStatus(remoteStatus),
 			),
-			wantResult: reconcile.Result{Requeue: false},
+			wantResult: reconcile.Result{RequeueAfter: aLongWait},
 		},
 		{
 			name:   "MissingTemplate",
@@ -416,17 +429,47 @@ func TestSync(t *testing.T) {
 			ar:     kubeAR(),
 			wantAR: kubeAR(
 				withFinalizers(finalizerName),
-				withConditions(
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonSyncingResource,
-						Message: messageMissingTemplate,
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errMissingTemplate)),
 				withState(v1alpha1.KubernetesApplicationResourceStateFailed),
 			),
 			wantResult: reconcile.Result{Requeue: true},
+		},
+		{
+			name: "SecretSyncPreservesType",
+			syncer: &remoteCluster{
+				unstructured: &mockUnstructuredClient{
+					mockSync: func(_ context.Context, got *unstructured.Unstructured) (*v1alpha1.RemoteStatus, error) {
+						return remoteStatus, nil
+					},
+				},
+				secret: &mockSecretClient{
+					mockSync: func(_ context.Context, got *corev1.Secret) error {
+						want := secretWithExplicitType.DeepCopy()
+						want.SetName(fmt.Sprintf("%s-%s", objectMeta.GetName(), secretWithExplicitType.GetName()))
+						want.SetNamespace(corev1.NamespaceDefault)
+						want.SetAnnotations(map[string]string{
+							RemoteControllerNamespace: objectMeta.GetNamespace(),
+							RemoteControllerName:      objectMeta.GetName(),
+							RemoteControllerUID:       string(objectMeta.GetUID()),
+						})
+						if diff := cmp.Diff(want, got); diff != "" {
+							return errors.Errorf("mockSync: -want, +got: %s", diff)
+						}
+
+						return nil
+					},
+				},
+			},
+			ar:      kubeAR(withTemplate(template(serviceWithoutNamespace))),
+			secrets: []corev1.Secret{*secretWithExplicitType},
+			wantAR: kubeAR(
+				withTemplate(template(serviceWithoutNamespace)),
+				withFinalizers(finalizerName),
+				withConditions(runtimev1alpha1.ReconcileSuccess()),
+				withState(v1alpha1.KubernetesApplicationResourceStateSubmitted),
+				withRemoteStatus(remoteStatus),
+			),
+			wantResult: reconcile.Result{RequeueAfter: aLongWait},
 		},
 		{
 			name: "SecretSyncFailed",
@@ -438,14 +481,7 @@ func TestSync(t *testing.T) {
 			wantAR: kubeAR(
 				withTemplate(template(serviceWithoutNamespace)),
 				withFinalizers(finalizerName),
-				withConditions(
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonSyncingSecret,
-						Message: errorBoom.Error(),
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 				withState(v1alpha1.KubernetesApplicationResourceStateFailed),
 			),
 			wantResult: reconcile.Result{Requeue: true},
@@ -464,14 +500,7 @@ func TestSync(t *testing.T) {
 				withTemplate(template(serviceWithoutNamespace)),
 				withFinalizers(finalizerName),
 				withRemoteStatus(remoteStatus),
-				withConditions(
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonSyncingResource,
-						Message: errorBoom.Error(),
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 				withState(v1alpha1.KubernetesApplicationResourceStateFailed),
 			),
 			wantResult: reconcile.Result{Requeue: true},
@@ -485,14 +514,7 @@ func TestSync(t *testing.T) {
 			wantAR: kubeAR(
 				withTemplate(template(serviceWithoutNamespace)),
 				withFinalizers(finalizerName),
-				withConditions(
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonSyncingResource,
-						Message: errorBoom.Error(),
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 				withState(v1alpha1.KubernetesApplicationResourceStateFailed),
 				withRemoteStatus(remoteStatus),
 			),
@@ -566,7 +588,7 @@ func TestDelete(t *testing.T) {
 			),
 			secrets: []corev1.Secret{*secret},
 			wantAR: kubeAR(
-				withConditions(deleting),
+				withConditions(runtimev1alpha1.ReconcileSuccess()),
 				withTemplate(template(service)),
 			),
 			wantResult: reconcile.Result{Requeue: false},
@@ -579,15 +601,7 @@ func TestDelete(t *testing.T) {
 			),
 			wantAR: kubeAR(
 				withFinalizers(finalizerName),
-				withConditions(
-					deleting,
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonDeletingResource,
-						Message: messageMissingTemplate,
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errMissingTemplate)),
 				withState(v1alpha1.KubernetesApplicationResourceStateFailed),
 			),
 			wantResult: reconcile.Result{Requeue: true},
@@ -606,15 +620,7 @@ func TestDelete(t *testing.T) {
 			wantAR: kubeAR(
 				withFinalizers(finalizerName),
 				withTemplate(template(serviceWithoutNamespace)),
-				withConditions(
-					deleting,
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonDeletingSecret,
-						Message: errorBoom.Error(),
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 				withState(v1alpha1.KubernetesApplicationResourceStateFailed),
 			),
 			wantResult: reconcile.Result{Requeue: true},
@@ -631,15 +637,7 @@ func TestDelete(t *testing.T) {
 			wantAR: kubeAR(
 				withFinalizers(finalizerName),
 				withTemplate(template(serviceWithoutNamespace)),
-				withConditions(
-					deleting,
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonDeletingResource,
-						Message: errorBoom.Error(),
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 				withState(v1alpha1.KubernetesApplicationResourceStateFailed),
 			),
 			wantResult: reconcile.Result{Requeue: true},
@@ -682,7 +680,7 @@ func TestSyncUnstructured(t *testing.T) {
 						*obj.(*unstructured.Unstructured) = *existing
 						return nil
 					},
-					MockUpdate: func(_ context.Context, obj runtime.Object) error {
+					MockPatch: func(_ context.Context, obj runtime.Object, patch client.Patch, _ ...client.PatchOption) error {
 						// We compare resource versions to ensure we preserved
 						// the existing service's important object metadata.
 						want := resourceVersion
@@ -712,7 +710,7 @@ func TestSyncUnstructured(t *testing.T) {
 			},
 			template:   template(service),
 			wantStatus: nil,
-			wantErr: errors.WithStack(errors.Errorf("cannot sync resource: could not mutate object for update: Service %s/%s exists and is not controlled by %s %s",
+			wantErr: errors.WithStack(errors.Errorf("cannot sync resource: Service %s/%s exists and is not controlled by %s %s",
 				existingService.GetNamespace(),
 				existingService.GetName(),
 				v1alpha1.KubernetesApplicationResourceKind,
@@ -720,13 +718,54 @@ func TestSyncUnstructured(t *testing.T) {
 			)),
 		},
 		{
-			name: "CreateOrUpdateFailed",
+			name: "CreateSuccessful",
+			unstructured: &unstructuredClient{
+				kube: &test.MockClient{
+					MockGet: test.NewMockGetFn(kerrors.NewNotFound(schema.GroupResource{}, name)),
+					MockCreate: func(_ context.Context, obj runtime.Object, _ ...client.CreateOption) error {
+						if diff := cmp.Diff(template(service), obj); diff != "" {
+							t.Errorf("Create: -want, +got:\n%s", diff)
+						}
+						return nil
+					},
+				},
+			},
+			template:   template(service),
+			wantStatus: nil,
+			wantErr:    nil,
+		},
+		{
+			name: "CreateFailed",
+			unstructured: &unstructuredClient{
+				kube: &test.MockClient{
+					MockGet:    test.NewMockGetFn(kerrors.NewNotFound(schema.GroupResource{}, name)),
+					MockCreate: test.NewMockCreateFn(errorBoom),
+				},
+			},
+			template:   template(service),
+			wantStatus: nil,
+			wantErr:    errors.Wrap(errorBoom, "cannot create resource"),
+		},
+		{
+			name: "GetFailed",
 			unstructured: &unstructuredClient{
 				kube: &test.MockClient{MockGet: test.NewMockGetFn(errorBoom)},
 			},
 			template:   template(service),
 			wantStatus: nil,
-			wantErr:    errors.Wrap(errorBoom, "cannot sync resource: could not get object"),
+			wantErr:    errors.Wrap(errorBoom, "cannot get resource"),
+		},
+		{
+			name: "PatchFailed",
+			unstructured: &unstructuredClient{
+				kube: &test.MockClient{
+					MockGet:   test.NewMockGetFn(nil),
+					MockPatch: test.NewMockPatchFn(errorBoom),
+				},
+			},
+			template:   template(service),
+			wantStatus: remoteStatus,
+			wantErr:    errors.Wrap(errorBoom, "cannot patch resource"),
 		},
 	}
 
@@ -860,7 +899,7 @@ func TestSyncSecret(t *testing.T) {
 						*obj.(*corev1.Secret) = *existing
 						return nil
 					},
-					MockUpdate: func(_ context.Context, obj runtime.Object) error {
+					MockUpdate: func(_ context.Context, obj runtime.Object, _ ...client.UpdateOption) error {
 						// We compare resource versions to ensure we preserved
 						// the existing service's important object metadata.
 						want := resourceVersion
@@ -888,7 +927,7 @@ func TestSyncSecret(t *testing.T) {
 				},
 			},
 			template: secret,
-			wantErr: errors.WithStack(errors.Errorf("cannot sync secret: could not mutate object for update: secret %s/%s exists and is not controlled by %s %s",
+			wantErr: errors.WithStack(errors.Errorf("cannot sync secret: secret %s/%s exists and is not controlled by %s %s",
 				existingSecret.GetNamespace(),
 				existingSecret.GetName(),
 				v1alpha1.KubernetesApplicationResourceKind,
@@ -903,7 +942,7 @@ func TestSyncSecret(t *testing.T) {
 				},
 			},
 			template: secret,
-			wantErr:  errors.Wrap(errorBoom, "cannot sync secret: could not get object"),
+			wantErr:  errors.Wrap(errorBoom, "cannot sync secret"),
 		},
 	}
 
@@ -1036,15 +1075,15 @@ func TestConnectConfig(t *testing.T) {
 			ar: kubeAR(withCluster(clusterRef)),
 			wantConfig: &rest.Config{
 				Host:     apiServerURL.String(),
-				Username: string(secret.Data[corev1alpha1.ResourceCredentialsSecretUserKey]),
-				Password: string(secret.Data[corev1alpha1.ResourceCredentialsSecretPasswordKey]),
+				Username: string(secret.Data[runtimev1alpha1.ResourceCredentialsSecretUserKey]),
+				Password: string(secret.Data[runtimev1alpha1.ResourceCredentialsSecretPasswordKey]),
 				TLSClientConfig: rest.TLSClientConfig{
 					ServerName: apiServerURL.Hostname(),
-					CAData:     secret.Data[corev1alpha1.ResourceCredentialsSecretCAKey],
-					CertData:   secret.Data[corev1alpha1.ResourceCredentialsSecretClientCertKey],
-					KeyData:    secret.Data[corev1alpha1.ResourceCredentialsSecretClientKeyKey],
+					CAData:     secret.Data[runtimev1alpha1.ResourceCredentialsSecretCAKey],
+					CertData:   secret.Data[runtimev1alpha1.ResourceCredentialsSecretClientCertKey],
+					KeyData:    secret.Data[runtimev1alpha1.ResourceCredentialsSecretClientKeyKey],
 				},
-				BearerToken: string(secret.Data[corev1alpha1.ResourceCredentialsTokenKey]),
+				BearerToken: string(secret.Data[runtimev1alpha1.ResourceCredentialsTokenKey]),
 			},
 			wantErr: nil,
 		},
@@ -1091,7 +1130,7 @@ func TestConnectConfig(t *testing.T) {
 					MockGet: func(_ context.Context, _ client.ObjectKey, obj runtime.Object) error {
 						if actual, ok := obj.(*corev1.Secret); ok {
 							s := secret.DeepCopy()
-							s.Data[corev1alpha1.ResourceCredentialsSecretEndpointKey] = []byte(malformedURL)
+							s.Data[runtimev1alpha1.ResourceCredentialsSecretEndpointKey] = []byte(malformedURL)
 							*actual = *s
 						}
 						return nil
@@ -1259,18 +1298,11 @@ func TestReconcile(t *testing.T) {
 						*obj.(*v1alpha1.KubernetesApplicationResource) = *(kubeAR())
 						return nil
 					},
-					MockUpdate: func(_ context.Context, obj runtime.Object) error {
+					MockUpdate: func(_ context.Context, obj runtime.Object, _ ...client.UpdateOption) error {
 						got := obj.(*v1alpha1.KubernetesApplicationResource)
 
 						want := kubeAR(
-							withConditions(
-								corev1alpha1.DeprecatedCondition{
-									Type:    corev1alpha1.DeprecatedFailed,
-									Status:  corev1.ConditionTrue,
-									Reason:  reasonFetchingClient,
-									Message: errorBoom.Error(),
-								},
-							),
+							withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 						)
 
 						if diff := cmp.Diff(want, got); diff != "" {
@@ -1295,7 +1327,7 @@ func TestReconcile(t *testing.T) {
 							withDeletionTimestamp(deleteTime)))
 						return nil
 					},
-					MockUpdate: func(_ context.Context, obj runtime.Object) error {
+					MockUpdate: func(_ context.Context, obj runtime.Object, _ ...client.UpdateOption) error {
 						got := obj.(*v1alpha1.KubernetesApplicationResource)
 						want := kubeAR(withDeletionTimestamp(deleteTime))
 
@@ -1412,14 +1444,7 @@ func TestGetConnectionSecrets(t *testing.T) {
 			),
 			wantAR: kubeAR(
 				withSecrets(secretLocalObjectRef),
-				withConditions(
-					corev1alpha1.DeprecatedCondition{
-						Type:    corev1alpha1.DeprecatedFailed,
-						Status:  corev1.ConditionTrue,
-						Reason:  reasonGettingSecret,
-						Message: errorBoom.Error(),
-					},
-				),
+				withConditions(runtimev1alpha1.ReconcileError(errorBoom)),
 			),
 			wantSecrets: []corev1.Secret{},
 		},

@@ -5,7 +5,11 @@ metadata:
   name: gitlab-uploads
   namespace: default
 spec:
-  classReference:
+  classRef:
+    kind: S3BucketClass
+    apiVersion: storage.aws.crossplane.io/v1alpha2
     name: standard-aws-bucket
     namespace: crossplane-system
+  writeConnectionSecretToRef:
+    name: gitlab-uploads
   name: gitlab-demo-uploads-%s

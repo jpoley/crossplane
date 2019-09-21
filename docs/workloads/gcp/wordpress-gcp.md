@@ -30,26 +30,26 @@ For the next steps, make sure your `kubectl` context points to the cluster where
 
   ```bash
   export PROJECT_ID=[your-demo-project-id]
-  export BASE64ENCODED_GCP_PROVIDER_CREDS=$(base64 -w0 crossplane-gcp-provider-key.json)
+  export BASE64ENCODED_GCP_PROVIDER_CREDS=$(base64 crossplane-gcp-provider-key.json | tr -d "\n")
   ```
 
 * Patch and Apply `provider.yaml`:
 
   ```bash
-  sed "s/BASE64ENCODED_GCP_PROVIDER_CREDS/$BASE64ENCODED_GCP_PROVIDER_CREDS/g;s/PROJECT_ID/$PROJECT_ID/g" cluster/examples/workloads/kubernetes/wordpress-gcp/provider.yaml | kubectl create -f -
+  sed "s/BASE64ENCODED_GCP_PROVIDER_CREDS/$BASE64ENCODED_GCP_PROVIDER_CREDS/g;s/PROJECT_ID/$PROJECT_ID/g" cluster/examples/workloads/kubernetes/wordpress/gcp/provider.yaml | kubectl create -f -
   ```
 
-* Verify that GCP Provider is in `Ready` state
+* Verify that GCP Provider exists
 
   ```bash
-  kubectl -n crossplane-system get providers.gcp.crossplane.io -o custom-columns=NAME:.metadata.name,STATUS:'.status.Conditions[?(@.Status=="True")].Type',PROJECT-ID:.spec.projectID
+  kubectl -n crossplane-system get providers.gcp.crossplane.io -o custom-columns=NAME:.metadata.name,PROJECT-ID:.spec.projectID
   ```
 
   Your output should look similar to:
 
   ```bash
-  NAME           STATUS   PROJECT-ID
-  gcp-provider   Ready    [your-project-id]
+  NAME           PROJECT-ID
+  gcp-provider   [your-project-id]
   ```
 
 * Verify that Resource Classes have been created
@@ -74,13 +74,13 @@ For the next steps, make sure your `kubectl` context points to the cluster where
   The `Application Developer(s)` will use the `complex` namespace.
 
   ```bash
-  kubectl apply -f cluster/examples/workloads/kubernetes/wordpress-gcp/cluster.yaml
+  kubectl apply -f cluster/examples/workloads/kubernetes/wordpress/gcp/cluster.yaml
   ```
 
   * Verify that the Kubernetes Cluster resource was created
 
     ```bash
-    kubectl -n complex get kubernetescluster -o custom-columns=NAME:.metadata.name,CLUSTERCLASS:.spec.classReference.name,CLUSTERREF:.spec.resourceName.name
+    kubectl -n complex get kubernetescluster -o custom-columns=NAME:.metadata.name,CLUSTERCLASS:.spec.classRef.name,CLUSTERREF:.spec.resourceRef.name
     ```
 
     Your output should look similar to:
@@ -121,7 +121,7 @@ Let's begin deploying the workload as the application developer:
 * Deploy workload
 
   ```bash
-  kubectl apply -f cluster/examples/workloads/kubernetes/wordpress-gcp/app.yaml
+  kubectl apply -f cluster/examples/workloads/kubernetes/wordpress/gcp/app.yaml
   ```
 
 * Wait for `MySQLInstance` to be in `Bound` State
@@ -129,27 +129,27 @@ Let's begin deploying the workload as the application developer:
   You can check the status via:
 
   ```bash
-  kubectl get mysqlinstance -n complex -o custom-columns=NAME:.metadata.name,VERSION:.spec.engineVersion,STATE:.status.bindingPhase,CLASS:.spec.classReference.name
+  kubectl get mysqlinstance -n complex
   ```
 
-  Your output should look like:
+  Your output should look similar to:
 
   ```bash
-  NAME   VERSION   STATE   CLASS
-  sql   5.7       Bound   standard-mysql
+  NAME   STATUS   CLASS            VERSION   AGE
+  sql    Bound    standard-mysql   5.7       9m
   ```
 
   **Note**: to check on the concrete resource type status as `Administrator` you can run:
 
   ```bash
-  kubectl -n crossplane-system get cloudsqlinstance -o custom-columns=NAME:.metadata.name,STATUS:.status.state,CLASS:.spec.classRef.name,VERSION:.spec.databaseVersion
+  kubectl -n crossplane-system get cloudsqlinstance
   ```
 
   Your output should be similar to:
 
   ```bash
-  NAME                                         STATUS     CLASS            VERSION
-  mysql-2fea0d8e-f5bb-11e8-9cec-9cb6d08bde99   RUNNABLE   standard-mysql   MYSQL_5_7
+  NAME                                                 STATUS   STATE      CLASS            VERSION     AGE
+  mysqlinstance-acaa2117-a830-11e9-8c7f-025000000001   Bound    RUNNABLE   standard-mysql   MYSQL_5_7   10m
   ```
 
 * Wait for the Wordpress service, a `KubernetesApplicationResource`, to report its External IP Address
@@ -182,19 +182,19 @@ Once you are done with this example, you can clean up all its artifacts with the
 * Remove the `App`
 
   ```bash
-  kubectl delete -f cluster/examples/workloads/kubernetes/wordpress-gcp/app.yaml
+  kubectl delete -f cluster/examples/workloads/kubernetes/wordpress/gcp/app.yaml
   ```
 
 * Remove the `KubernetesCluster`
 
   ```bash
-  kubectl delete -f cluster/examples/workloads/kubernetes/wordpress-gcp/cluster.yaml
+  kubectl delete -f cluster/examples/workloads/kubernetes/wordpress/gcp/cluster.yaml
   ```
 
 * Remove the GCP `Provider` and Crossplane `ResourceClasses`
 
   ```bash
-  kubectl delete -f cluster/examples/workloads/kubernetes/wordpress-gcp/provider.yaml
+  kubectl delete -f cluster/examples/workloads/kubernetes/wordpress/gcp/provider.yaml
   ```
 
 * Delete Google Project

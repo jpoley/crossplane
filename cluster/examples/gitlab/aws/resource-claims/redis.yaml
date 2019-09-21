@@ -4,7 +4,11 @@ metadata:
   name: gitlab-redis
   namespace: default
 spec:
-  classReference:
+  classRef:
+    kind: ReplicationGroupClass
+    apiVersion: cache.aws.crossplane.io/v1alpha2
     name: standard-aws-redis
     namespace: crossplane-system
+  writeConnectionSecretToRef:
+    name: gitlab-redis
   engineVersion: "3.2"

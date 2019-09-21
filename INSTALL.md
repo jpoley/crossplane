@@ -21,17 +21,14 @@ The following tools are need on the host:
 
 ## Build
 
-First ensure that you have the build submodule synced and updated:
-
-```
-git submodule sync && git submodule update --init --recursive
-```
-
-You can then build the Crossplane binaries and all container images for the host platform by simply running the command below. Building in parallel with the `-j` option is recommended.
+You can build the Crossplane binaries and all container images for the host platform by simply running the command below. Building in parallel with the `-j` option is recommended.
 
 ```
 make -j4
 ```
+
+The first time `make` is run, the build submodule will be synced and
+updated. After initial setup, it can be updated by running `make submodules`.
 
 Run `make help` for more options.
 
@@ -144,7 +141,7 @@ To prune the number of cached images run `make prune`. There are two options tha
 ## CI workflow and options
 
 Every PR and every merge to master triggers the CI process in [Jenkins](https://jenkinsci.upbound.io/blue).
-The Jenkins CI will build, run unit tests, run integration tests and Publish artifacts- On every commit to PR and master. If any of the CI stages fail, then the process is aborted and no artifacts are published.
+The Jenkins CI will build, run unit tests, run [integration tests](/cluster/local/README.md#run-integration-tests) and Publish artifacts- On every commit to PR and master. If any of the CI stages fail, then the process is aborted and no artifacts are published.
 
 On every successful build Artifacts are pushed to a [s3 bucket](https://releases.crossplane.io/). On every successful master build, images are uploaded to docker hub in addition.
 

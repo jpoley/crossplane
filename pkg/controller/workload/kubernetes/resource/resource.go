@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Crossplane Authors.
+Copyright 2019 The Crossplane Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,21 +31,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
+	util "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	computev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/compute/v1alpha1"
-	corev1alpha1 "github.com/crossplaneio/crossplane/pkg/apis/core/v1alpha1"
-	"github.com/crossplaneio/crossplane/pkg/apis/workload/v1alpha1"
-	"github.com/crossplaneio/crossplane/pkg/logging"
-	"github.com/crossplaneio/crossplane/pkg/meta"
-	"github.com/crossplaneio/crossplane/pkg/util"
+	runtimev1alpha1 "github.com/crossplaneio/crossplane-runtime/apis/core/v1alpha1"
+	"github.com/crossplaneio/crossplane-runtime/pkg/logging"
+	"github.com/crossplaneio/crossplane-runtime/pkg/meta"
+	computev1alpha1 "github.com/crossplaneio/crossplane/apis/compute/v1alpha1"
+	"github.com/crossplaneio/crossplane/apis/workload/v1alpha1"
 )
 
 const (
@@ -53,21 +50,17 @@ const (
 	finalizerName    = "finalizer." + controllerName
 	reconcileTimeout = 1 * time.Minute
 
-	reasonFetchingClient   = "failed to fetch Kubernetes client"
-	reasonSyncingResource  = "failed to sync templated resource in Kubernetes cluster"
-	reasonDeletingResource = "failed to delete templated resource from Kubernetes cluster"
-	reasonGettingSecret    = "failed to get connection secret for resource dependency"
-	reasonSyncingSecret    = "failed to update connection secret for resource dependency"
-	reasonDeletingSecret   = "failed to delete connection secret for resource dependency"
-
-	messageMissingTemplate = v1alpha1.KubernetesApplicationResourceKind + " must include a template"
+	// The time we wait before requeueing a speculative reconcile.
+	aLongWait = 1 * time.Minute
 )
 
+var errMissingTemplate = errors.New(v1alpha1.KubernetesApplicationResourceKind + " must include a template")
+
 // Ownership annotations
-const (
-	RemoteControllerNamespace = v1alpha1.KubernetesApplicationResourceKind + "." + v1alpha1.Group + "/namespace"
-	RemoteControllerName      = v1alpha1.KubernetesApplicationResourceKind + "." + v1alpha1.Group + "/name"
-	RemoteControllerUID       = v1alpha1.KubernetesApplicationResourceKind + "." + v1alpha1.Group + "/uid"
+var (
+	RemoteControllerNamespace = v1alpha1.KubernetesApplicationGroupVersionKind.GroupKind().String() + "/namespace"
+	RemoteControllerName      = v1alpha1.KubernetesApplicationGroupVersionKind.GroupKind().String() + "/name"
+	RemoteControllerUID       = v1alpha1.KubernetesApplicationGroupVersionKind.GroupKind().String() + "/uid"
 )
 
 var (
@@ -94,24 +87,23 @@ func UpdatePredicate(event event.UpdateEvent) bool {
 	return wl.Status.Cluster != nil
 }
 
-// Add creates a new Instance Controller and adds it to the Manager with default RBAC.
-// The Manager will set fields on the Controller and Start it when the Manager is Started.
-func Add(mgr manager.Manager) error {
+// Controller is responsible for adding the Instance
+// controller and its corresponding reconciler to the manager with any runtime configuration.
+type Controller struct{}
+
+// SetupWithManager creates a new Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
+// and Start it when the Manager is Started.
+func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 	r := &Reconciler{
 		connecter: &clusterConnecter{kube: mgr.GetClient()},
 		kube:      mgr.GetClient(),
 	}
-	c, err := controller.New(controllerName, mgr, controller.Options{Reconciler: r})
-	if err != nil {
-		return errors.Wrap(err, "cannot create Kubernetes controller")
-	}
 
-	err = c.Watch(
-		&source.Kind{Type: &v1alpha1.KubernetesApplicationResource{}},
-		&handler.EnqueueRequestForObject{},
-		&predicate.Funcs{CreateFunc: CreatePredicate, UpdateFunc: UpdatePredicate},
-	)
-	return errors.Wrapf(err, "cannot watch for %s", v1alpha1.KubernetesApplicationResourceKind)
+	return ctrl.NewControllerManagedBy(mgr).
+		Named(controllerName).
+		For(&v1alpha1.KubernetesApplicationResource{}).
+		WithEventFilter(&predicate.Funcs{CreateFunc: CreatePredicate, UpdateFunc: UpdatePredicate}).
+		Complete(r)
 }
 
 // A syncer can sync resources with a KubernetesCluster.
@@ -168,12 +160,11 @@ type remoteCluster struct {
 
 func (c *remoteCluster) sync(ctx context.Context, ar *v1alpha1.KubernetesApplicationResource, secrets []corev1.Secret) reconcile.Result {
 	meta.AddFinalizer(ar, finalizerName)
-	ar.Status.UnsetAllDeprecatedConditions()
 
 	// Our CRD requires template to be specified, but just in case...
 	if ar.Spec.Template == nil {
 		ar.Status.State = v1alpha1.KubernetesApplicationResourceStateFailed
-		ar.Status.SetFailed(reasonSyncingResource, messageMissingTemplate)
+		ar.Status.SetConditions(runtimev1alpha1.ReconcileError(errMissingTemplate))
 		return reconcile.Result{Requeue: true}
 	}
 
@@ -185,7 +176,7 @@ func (c *remoteCluster) sync(ctx context.Context, ar *v1alpha1.KubernetesApplica
 
 		if err := c.secret.sync(ctx, template); err != nil {
 			ar.Status.State = v1alpha1.KubernetesApplicationResourceStateFailed
-			ar.Status.SetFailed(reasonSyncingSecret, err.Error())
+			ar.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
 			return reconcile.Result{Requeue: true}
 		}
 	}
@@ -206,23 +197,20 @@ func (c *remoteCluster) sync(ctx context.Context, ar *v1alpha1.KubernetesApplica
 	}
 	if err != nil {
 		ar.Status.State = v1alpha1.KubernetesApplicationResourceStateFailed
-		ar.Status.SetFailed(reasonSyncingResource, err.Error())
+		ar.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
 		return reconcile.Result{Requeue: true}
 	}
 
-	ar.Status.SetReady()
+	ar.Status.SetConditions(runtimev1alpha1.ReconcileSuccess())
 	ar.Status.State = v1alpha1.KubernetesApplicationResourceStateSubmitted
-	return reconcile.Result{Requeue: false}
+	return reconcile.Result{RequeueAfter: aLongWait}
 }
 
 func (c *remoteCluster) delete(ctx context.Context, ar *v1alpha1.KubernetesApplicationResource, secrets []corev1.Secret) reconcile.Result {
-	ar.Status.UnsetAllDeprecatedConditions()
-	ar.Status.SetDeleting()
-
 	// Our CRD requires template to be specified, but just in case...
 	if ar.Spec.Template == nil {
 		ar.Status.State = v1alpha1.KubernetesApplicationResourceStateFailed
-		ar.Status.SetFailed(reasonDeletingResource, messageMissingTemplate)
+		ar.Status.SetConditions(runtimev1alpha1.ReconcileError(errMissingTemplate))
 		return reconcile.Result{Requeue: true}
 	}
 
@@ -235,7 +223,7 @@ func (c *remoteCluster) delete(ctx context.Context, ar *v1alpha1.KubernetesAppli
 
 	if err := c.unstructured.delete(ctx, template); err != nil {
 		ar.Status.State = v1alpha1.KubernetesApplicationResourceStateFailed
-		ar.Status.SetFailed(reasonDeletingResource, err.Error())
+		ar.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
 		return reconcile.Result{Requeue: true}
 	}
 
@@ -247,11 +235,12 @@ func (c *remoteCluster) delete(ctx context.Context, ar *v1alpha1.KubernetesAppli
 
 		if err := c.secret.delete(ctx, template); err != nil {
 			ar.Status.State = v1alpha1.KubernetesApplicationResourceStateFailed
-			ar.Status.SetFailed(reasonDeletingSecret, err.Error())
+			ar.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
 			return reconcile.Result{Requeue: true}
 		}
 	}
 	meta.RemoveFinalizer(ar, finalizerName)
+	ar.Status.SetConditions(runtimev1alpha1.ReconcileSuccess())
 	return reconcile.Result{Requeue: false}
 }
 
@@ -266,6 +255,7 @@ func createSecretTemplates(local []corev1.Secret, namespace, namePrefix string) 
 				Annotations: l.GetAnnotations(),
 			},
 			Data: l.Data,
+			Type: l.Type,
 		}
 	}
 	return templates
@@ -279,41 +269,27 @@ func (c *unstructuredClient) sync(ctx context.Context, template *unstructured.Un
 	// We make another copy of our template here so we can compare the template
 	// as passed to this method with the remote resource.
 	remote := template.DeepCopy()
-
-	// TODO(negz): Handle immutable, server-populated, fields such as a
-	// Service's ClusterIP. For example:
-	// spec.clusterIP: Invalid value: "": field is immutable
-	// Generate a JSON patch from the two unstructured contents?
-
-	var rs *v1alpha1.RemoteStatus
-
-	err := util.CreateOrUpdate(ctx, c.kube, remote, func() error {
-		// Inside this anonymous function remote could either be unchanged (if
-		// it does not exist in the API server) or updated to reflect its
-		// current state according to the API server.
-
-		if !haveSameController(remote, template) {
-			return errors.Errorf("%s %s/%s exists and is not controlled by %s %s",
-				remote.GetObjectKind().GroupVersionKind().Kind, remote.GetNamespace(), remote.GetName(),
-				v1alpha1.KubernetesApplicationResourceKind, template.GetAnnotations()[RemoteControllerName])
+	key, err := client.ObjectKeyFromObject(remote)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot take object key from resource")
+	}
+	if err := c.kube.Get(ctx, key, remote); err != nil {
+		if kerrors.IsNotFound(err) {
+			return nil, errors.Wrap(c.kube.Create(ctx, remote), "cannot create resource")
 		}
+		return nil, errors.Wrap(err, "cannot get resource")
+	}
+	if !haveSameController(remote, template) {
+		return nil, errors.Wrap(errors.Errorf("%s %s/%s exists and is not controlled by %s %s",
+			remote.GetObjectKind().GroupVersionKind().Kind, remote.GetNamespace(), remote.GetName(),
+			v1alpha1.KubernetesApplicationResourceKind, template.GetAnnotations()[RemoteControllerName]), "cannot sync resource")
+	}
 
-		// Propagate the 'status' field of remote (if any) before we overwrite
-		// it with our template.
-		rs = getRemoteStatus(remote)
+	// Propagate the 'status' field of remote (if any) before we overwrite
+	// it with our template.
+	rs := getRemoteStatus(remote)
 
-		existing := remote.DeepCopy()
-		template.DeepCopyInto(remote)
-
-		// Keep important metadata from any existing resource.
-		remote.SetUID(existing.GetUID())
-		remote.SetResourceVersion(existing.GetResourceVersion())
-		remote.SetNamespace(existing.GetNamespace())
-
-		return nil
-	})
-
-	return rs, errors.Wrap(err, "cannot sync resource")
+	return rs, errors.Wrap(c.kube.Patch(ctx, remote, client.MergeFrom(template)), "cannot patch resource")
 }
 
 func getRemoteStatus(u runtime.Unstructured) *v1alpha1.RemoteStatus {
@@ -366,7 +342,7 @@ func (c *secretClient) sync(ctx context.Context, template *corev1.Secret) error 
 	// as passed to this method with the remote resource.
 	remote := template.DeepCopy()
 
-	err := util.CreateOrUpdate(ctx, c.kube, remote, func() error {
+	_, err := util.CreateOrUpdate(ctx, c.kube, remote, func() error {
 		// Inside this anonymous function remote could either be unchanged (if
 		// it does not exist in the API server) or updated to reflect its
 		// current state according to the API server.
@@ -434,31 +410,31 @@ func (c *clusterConnecter) config(ctx context.Context, ar *v1alpha1.KubernetesAp
 		return nil, errors.Wrapf(err, "cannot get %s %s", computev1alpha1.KubernetesClusterKind, n)
 	}
 
-	n = types.NamespacedName{Namespace: k.GetNamespace(), Name: k.Status.CredentialsSecretRef.Name}
+	n = types.NamespacedName{Namespace: k.GetNamespace(), Name: k.Spec.WriteConnectionSecretToReference.Name}
 	s := &corev1.Secret{}
 	if err := c.kube.Get(ctx, n, s); err != nil {
 		return nil, errors.Wrapf(err, "cannot get secret %s", n)
 	}
 
-	u, err := url.Parse(string(s.Data[corev1alpha1.ResourceCredentialsSecretEndpointKey]))
+	u, err := url.Parse(string(s.Data[runtimev1alpha1.ResourceCredentialsSecretEndpointKey]))
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot parse Kubernetes endpoint as URL")
 	}
 
 	config := &rest.Config{
 		Host:     u.String(),
-		Username: string(s.Data[corev1alpha1.ResourceCredentialsSecretUserKey]),
-		Password: string(s.Data[corev1alpha1.ResourceCredentialsSecretPasswordKey]),
+		Username: string(s.Data[runtimev1alpha1.ResourceCredentialsSecretUserKey]),
+		Password: string(s.Data[runtimev1alpha1.ResourceCredentialsSecretPasswordKey]),
 		TLSClientConfig: rest.TLSClientConfig{
 			// This field's godoc claims clients will use 'the hostname used to
 			// contact the server' when it is left unset. In practice clients
 			// appear to use the URL, including scheme and port.
 			ServerName: u.Hostname(),
-			CAData:     s.Data[corev1alpha1.ResourceCredentialsSecretCAKey],
-			CertData:   s.Data[corev1alpha1.ResourceCredentialsSecretClientCertKey],
-			KeyData:    s.Data[corev1alpha1.ResourceCredentialsSecretClientKeyKey],
+			CAData:     s.Data[runtimev1alpha1.ResourceCredentialsSecretCAKey],
+			CertData:   s.Data[runtimev1alpha1.ResourceCredentialsSecretClientCertKey],
+			KeyData:    s.Data[runtimev1alpha1.ResourceCredentialsSecretClientKeyKey],
 		},
-		BearerToken: string(s.Data[corev1alpha1.ResourceCredentialsTokenKey]),
+		BearerToken: string(s.Data[runtimev1alpha1.ResourceCredentialsTokenKey]),
 	}
 
 	return config, nil
@@ -510,7 +486,7 @@ func (r *Reconciler) Reconcile(req reconcile.Request) (reconcile.Result, error) 
 			meta.RemoveFinalizer(ar, finalizerName)
 			return reconcile.Result{Requeue: false}, errors.Wrapf(r.kube.Update(ctx, ar), "cannot update %s %s", v1alpha1.KubernetesApplicationResourceKind, req.NamespacedName)
 		}
-		ar.Status.SetFailed(reasonFetchingClient, err.Error())
+		ar.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
 		return reconcile.Result{Requeue: true}, errors.Wrapf(r.kube.Update(ctx, ar), "cannot update %s %s", v1alpha1.KubernetesApplicationResourceKind, req.NamespacedName)
 	}
 
@@ -529,7 +505,8 @@ func (r *Reconciler) getConnectionSecrets(ctx context.Context, ar *v1alpha1.Kube
 		s := corev1.Secret{}
 		n := types.NamespacedName{Namespace: ar.GetNamespace(), Name: ref.Name}
 		if err := r.kube.Get(ctx, n, &s); err != nil {
-			ar.Status.SetFailed(reasonGettingSecret, err.Error())
+			ar.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
+			log.V(logging.Debug).Info("error getting connection secret", "namespace", n.Namespace, "name", n.Name, "err", err)
 			continue
 		}
 		secrets = append(secrets, s)

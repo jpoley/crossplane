@@ -6,7 +6,7 @@ The commands in this guide assume you are running from a terminal/shell at the r
 
 ## Install Crossplane
 
-The first step will be to install Crossplane by following the steps in the [Crossplane install guide](install-crossplane.md).
+The first step will be to install Crossplane and any desired cloud provider stacks by following the steps in the [Crossplane install guide](install-crossplane.md).
 
 ## Add Cloud Provider
 
@@ -56,7 +56,7 @@ Let's create a `ResourceClass` that acts as a "blueprint" that contains the envi
 This is a task that the administrator should complete, since they will have the knowledge and privileges for the specific environment details.
 
 ```console
-sed "s/BASE64ENCODED_${PROVIDER}_PROVIDER_CREDS/`cat ${PROVIDER_KEY_FILE}|base64|tr -d '\n'`/g;" cluster/examples/database/${provider}/postgresql/provider.yaml | kubectl create -f -
+sed "s/BASE64ENCODED_${PROVIDER}_PROVIDER_CREDS/`base64 ${PROVIDER_KEY_FILE} | tr -d '\n'`/g;" cluster/examples/database/${provider}/postgresql/provider.yaml | kubectl create -f -
 kubectl create -f cluster/examples/database/${provider}/postgresql/resource-class.yaml
 ```
 
@@ -77,7 +77,7 @@ Note that the first command gives us the status of the `ResourceClaim` (general 
 and the second command gives the status of the environment specific database resource that Crossplane is provisioning using the `ResourceClass` "blueprint".
 
 ```console
-kubectl -n demo get postgresqlinstance -o custom-columns=NAME:.metadata.name,STATUS:.status.bindingPhase,CLASS:.spec.classReference.name,VERSION:.spec.engineVersion,AGE:.metadata.creationTimestamp
+kubectl -n demo get postgresqlinstance -o custom-columns=NAME:.metadata.name,STATUS:.status.bindingPhase,CLASS:.spec.classRef.name,VERSION:.spec.engineVersion,AGE:.metadata.creationTimestamp
 kubectl -n crossplane-system get ${DATABASE_TYPE} -o custom-columns=NAME:.metadata.name,STATUS:.status.bindingPhase,STATE:.status.state,CLASS:.spec.classRef.name,VERSION:.spec.${versionfield},AGE:.metadata.creationTimestamp
 ```
 
@@ -86,7 +86,7 @@ kubectl -n crossplane-system get ${DATABASE_TYPE} -o custom-columns=NAME:.metada
 Once the dynamic provisioning process has finished creating and preparing the database, the status output will look similar to the following:
 
 ```console
-> kubectl -n demo get postgresqlinstance -o custom-columns=NAME:.metadata.name,STATUS:.status.bindingPhase,CLASS:.spec.classReference.name,VERSION:.spec.engineVersion,AGE:.metadata.creationTimestamp
+> kubectl -n demo get postgresqlinstance -o custom-columns=NAME:.metadata.name,STATUS:.status.bindingPhase,CLASS:.spec.classRef.name,VERSION:.spec.engineVersion,AGE:.metadata.creationTimestamp
 NAME                     STATUS    CLASS              VERSION   AGE
 cloud-postgresql-claim   Bound     cloud-postgresql   9.6       2018-12-23T04:00:11Z
 
@@ -97,7 +97,7 @@ postgresql-3ef70bf9-0667-11e9-99e1-080027cf2340   Bound     Ready     cloud-post
 
 Note that both the general `postgresqlinstance` `ResourceClaim` and the cloud provider specific PostgreSQL database have the `Bound` status, meaning the dynamic provisioning is done and the resource is ready for consumption.
 
-The connection information will be stored in a secret with the same name as the `ResourceClaim`.
+The connection information will be stored in a secret specified via the `writeConnectionSecretTo` field.
 Since the secret is base64 encoded, we'll need to decode its fields to view them in plain-text.
 To view all the connection information in plain-text, run the following command:
 

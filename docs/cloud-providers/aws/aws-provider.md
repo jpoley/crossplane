@@ -1,33 +1,45 @@
+
 # Adding Amazon Web Services (AWS) to Crossplane
 
-In this guide, we will walk through the steps necessary to configure your AWS account to be ready for integration with Crossplane.
+In this guide, we will walk through the steps necessary to configure your AWS account to be ready for integration with Crossplane. This will be done by adding a [`aw provider`] resource type, which enables Crossplane to communicate with an AWS account. 
 
-## AWS Credentials
+## Requirements
 
-### Option 1: aws Command Line Tool
+Prior to adding AWS to Crossplane, following steps need to be taken
 
-If you have already installed and configured the [`aws` command line tool](https://aws.amazon.com/cli/), you can simply find your AWS credentials file in `~/.aws/credentials`.
+- Crossplane is installed in a k8s cluster
+- AWS Stack is installed in the same cluster
+- `kubectl` is configured to communicate with the same cluster
 
-### Option 2: AWS Console in Web Browser
+## Step 1: Configure `aws` CLI
 
-If you do not have the `aws` tool installed, you can alternatively log into the [AWS console](https://aws.amazon.com/console/) and export the credentials.
-The steps to follow below are from the [AWS SDK for GO](https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/setting-up.html):
+Crossplane uses [AWS security credentials], and stores them as a [secret] which is managed by an  [`aw provider`]  instance. In addition, the AWS default region is also used for targeting a specific region.
+Crossplane requires to have [`aws` command line tool] [installed] and [configured]. Once installed, the credentials and configuration will reside in `~/.aws/credentials` and `~/.aws/config` respectively.
 
-1. Open the IAM console.
-1. On the navigation menu, choose Users.
-1. Choose your IAM user name (not the check box).
-1. Open the Security credentials tab, and then choose Create access key.
-1. To see the new access key, choose Show. Your credentials resemble the following:
-  - Access key ID: AKIAIOSFODNN7EXAMPLE
-  - Secret access key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-1. To download the key pair, choose Download .csv file.
+## Step 2: Setup `aws` Provider
 
-Then convert the `*.csv` file to the below format and save it to `~/.aws/credentials`:
+Run [setup.sh] script to read `aws` credentials and region, and create an [`aw provider`] instance in Crossplane:
 
-```
-[default]
-aws_access_key_id = AKIAIOSFODNN7EXAMPLE
-aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```bash
+./cluster/examples/setup-aws-provider/setup.sh [--profile aws_profile]
 ```
 
-After the steps above, you should have your AWS credentials stored in `~/.aws/credentials`.
+The `--profile` switch is optional and specifies the [aws named profile] that was set in Step 1. If not provided, the `default` profile will be selected.
+
+Once the script is successfully executed, Crossplane will use the specified aws account and region in the given named profile to create subsequent AWS managed resources.
+
+You can confirm the existense of the  [`aw provider`] by running:
+
+```bash
+kubectl -n crossplane-system get provider/aws-provider
+```
+
+[`aw provider`]: https://github.com/crossplaneio/stack-aws/blob/master/aws/apis/v1alpha2/types.go#L43
+ [`aws` command line tool]: https://aws.amazon.com/cli/
+[AWS SDK for GO]: https://docs.aws.amazon.com/sdk-for-go/v1/developer-guide/setting-up.html
+[installed]: [https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-install.html](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-install.html)
+[configured]: [https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html)
+[AWS security credentials]: https://docs.aws.amazon.com/general/latest/gr/aws-security-credentials.html
+[secret]:https://kubernetes.io/docs/concepts/configuration/secret/ 
+[setup.sh]: github.com/crossplaneio/crossplane/cluster/examples/setup-aws-provider/setup.sh
+[aws named profile]: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-profiles.html

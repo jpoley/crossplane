@@ -1,10 +1,10 @@
 ---
-title: Install
+title: Install Crossplane
 toc: true
-weight: 320
+weight: 220
 indent: true
 ---
-# Installing Crossplane
+# Install Crossplane
 
 Crossplane can be easily installed into any existing Kubernetes cluster using the regularly published Helm chart.
 The Helm chart contains all the custom resources and controllers needed to deploy and configure Crossplane.
@@ -14,6 +14,7 @@ The Helm chart contains all the custom resources and controllers needed to deplo
 * [Kubernetes cluster](https://kubernetes.io/docs/setup/)
   * For example [Minikube](https://kubernetes.io/docs/tasks/tools/install-minikube/), minimum version `v0.28+`
 * [Helm](https://docs.helm.sh/using_helm/), minimum version `v2.9.1+`.
+  * Make sure Helm is initialized with sufficient permissions to work on `crossplane-system` namespace.
 
 ## Installation
 
@@ -47,6 +48,113 @@ For example:
 
 ```console
 helm install --name crossplane --namespace crossplane-system crossplane-master/crossplane --version 0.0.0-249.637ccf9
+```
+
+## Installing Cloud Provider Stacks
+
+After Crossplane has been installed, you can add additional functionality to its control plane by installing Crossplane Stacks.
+For example, each supported cloud provider has its own corresponding stack that contains all the functionality for that particular cloud.
+After a cloud provider's stack is installed, you will be able to provision and manage resources within that cloud from Crossplane.
+
+### GCP Stack
+
+To get started with Google Cloud Platform (GCP), create a file named `stack-gcp.yaml` with the following content:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gcp
+---
+apiVersion: stacks.crossplane.io/v1alpha1
+kind: ClusterStackInstall
+metadata:
+  name: stack-gcp
+  namespace: gcp
+spec:
+  package: "crossplane/stack-gcp:master"
+```
+
+Then you can install the GCP stack into Crossplane in the `gcp` namespace with the following command:
+
+```console
+kubectl apply -f stack-gcp.yaml
+```
+
+### AWS Stack
+
+To get started with Amazon Web Services (AWS), create a file named `stack-aws.yaml` with the following content:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aws
+---
+apiVersion: stacks.crossplane.io/v1alpha1
+kind: ClusterStackInstall
+metadata:
+  name: stack-aws
+  namespace: aws
+spec:
+  package: "crossplane/stack-aws:master"
+```
+
+Then you can install the AWS stack into Crossplane in the `aws` namespace with the following command:
+
+```console
+kubectl apply -f stack-aws.yaml
+```
+
+### Azure Stack
+
+To get started with Microsoft Azure, create a file named `stack-azure.yaml` with the following content:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: azure
+---
+apiVersion: stacks.crossplane.io/v1alpha1
+kind: ClusterStackInstall
+metadata:
+  name: stack-azure
+  namespace: azure
+spec:
+  package: "crossplane/stack-azure:master"
+```
+
+Then you can install the Azure stack into Crossplane in the `azure` namespace with the following command:
+
+```console
+kubectl apply -f stack-azure.yaml
+```
+
+### Uninstalling Cloud Provider Stacks
+
+The cloud provider stacks can be uninstalled simply by deleting the stack resources from the cluster with a command similar to what's shown below.
+**Note** that this will also **delete** any resources that Crossplane has provisioned in the cloud provider if their `ReclaimPolicy` is set to `Delete`.
+
+After you have ensured that you are completely done with all your cloud provider resources, you can then run one of the commands below,
+depending on which cloud provider you are removing, to remove its stack from Crossplane:
+
+#### Uninstalling GCP
+
+```console
+kubectl delete -f stack-gcp.yaml
+```
+
+#### Uninstalling AWS
+
+```console
+kubectl delete -f stack-aws.yaml
+```
+
+#### Uninstalling Azure
+
+```console
+kubectl delete -f stack-azure.yaml
 ```
 
 ## Uninstalling the Chart

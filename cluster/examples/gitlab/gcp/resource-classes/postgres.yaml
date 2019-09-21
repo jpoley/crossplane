@@ -1,18 +1,19 @@
 # ResourceClass that defines the blueprint for how a "standard" CloudSQL instance
 # should be dynamically provisioned
-apiVersion: core.crossplane.io/v1alpha1
-kind: ResourceClass
+apiVersion: database.gcp.crossplane.io/v1alpha2
+kind: CloudsqlInstanceClass
 metadata:
   name: standard-gcp-postgres
   namespace: crossplane-system
   annotations:
-    resource: postgresqlinstance.storage.crossplane.io/v1alpha1
-parameters:
+    resource: postgresqlinstance.database.crossplane.io/v1alpha1
+specTemplate:
+  databaseVersion: POSTGRES_9_6
   tier: db-custom-1-3840
   region: us-west2
   storageType: PD_SSD
-  storageGB: "10"
-provisioner: cloudsqlinstance.database.gcp.crossplane.io/v1alpha1
-providerRef:
-  name: demo-gcp
-reclaimPolicy: Delete
+  storageGB: 10
+  providerRef:
+    name: demo-gcp
+    namespace: crossplane-system
+  reclaimPolicy: Delete

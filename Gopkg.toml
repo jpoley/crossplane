@@ -1,4 +1,4 @@
-# Gopkg.toml 
+# Gopkg.toml
 #
 # Add constraints for packages that are a direct dependency
 # of this project (i.e. they are imported by golang source code)
@@ -42,16 +42,14 @@ required = [
 
 [[constraint]]
   name="sigs.k8s.io/controller-runtime"
-  version="v0.1.10"
+  version="v0.2.0"
 
 [[override]]
   name="sigs.k8s.io/controller-tools"
-  source = "https://github.com/crossplaneio/controller-tools.git"
-  revision = "9acc926ef7ce7372609b34fbafe397158e6442ef"
+  revision = "ba11932048e4538f6e435f5ca0cdea19bf458338"
 
 # For dependency below: Refer to issue https://github.com/golang/dep/issues/1799
 [[override]]
   name = "gopkg.in/fsnotify.v1"
   source = "https://github.com/fsnotify/fsnotify.git"
   version="v1.4.7"
-

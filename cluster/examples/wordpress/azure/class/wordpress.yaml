@@ -1,11 +1,15 @@
-apiVersion: storage.crossplane.io/v1alpha1
+apiVersion: database.crossplane.io/v1alpha1
 kind: MySQLInstance
 metadata:
   name: mysql-instance
 spec:
-  classReference:
+  classRef:
+    kind: SQLServerClass
+    apiVersion: database.azure.crossplane.io/v1alpha2
     name: standard
     namespace: crossplane-system
+  writeConnectionSecretToRef:
+    name: mysql-instance
   engineVersion: "5.7"
 ---
 apiVersion: extensions/v1beta1

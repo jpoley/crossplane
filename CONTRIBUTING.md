@@ -116,7 +116,8 @@ https://blog.codinghorror.com/code-tells-you-how-comments-tell-you-why/
 For Go, Crossplane follows standard godoc guidelines.
 A concise godoc guideline can be found here: https://blog.golang.org/godoc-documenting-go-code
 
-## Commit Messages
+## Commits
+### Commit Messages
 
 We follow a rough convention for commit messages that is designed to answer two
 questions: what changed and why. The subject line should feature the what and
@@ -144,74 +145,18 @@ second line is always blank, and other lines should be wrapped at 80 characters.
 This allows the message to be easier to read on GitHub as well as in various
 git tools.
 
+### Commit History
+To prepare your branch to open a PR, you will need to have the minimal number of logical commits so we can maintain
+a clean commit history. Most commonly a PR will include a single commit where all changes are squashed, although
+sometimes there will be multiple logical commits. Please refer to [git documentation] for more information regarding rewriting the history. 
 
-## Adding New Resources
-
-### Project Organization
-The Crossplane project is based on and intially created by using [Kubebuilder is a framework for building Kubernetes APIs](https://github.com/kubernetes-sigs/kubebuilder).
-
-The Crossplane project organizes resources (api types and controllers) by grouping them by Cloud Provider with further sub-group by resource type 
-
-The Kubebuilder framework does not provide good support for projects with multiple groups and group tiers which contain resources with overlapping names. 
-For example:
-```
-pkg
-├── apis
-│   ├── aws
-│   │   ├── apis.go
-│   │   └── database
-│   │       ├── group.go
-│   │       └── v1alpha1
-│   │           ├── doc.go
-│   │           ├── rds_instance_types.go
-│   │           ├── rds_instance_types_test.go
-│   │           ├── register.go
-│   │           ├── v1alpha1_suite_test.go
-│   │           └── zz_generated.deepcopy.go
-│   └── gcp
-│       ├── apis.go
-│       └── database
-│           ├── group.go
-│           └── v1alpha1
-│               ├── cloudsql_instance_types.go
-│               ├── cloudsql_instance_types_test.go
-│               ├── doc.go
-│               ├── register.go
-│               ├── v1alpha1_suite_test.go
-│               └── zz_generated.deepcopy.go
-└── controller
-    ├── aws
-    │   ├── controller.go
-    │   └── database
-    │       ├── database_suite_test.go
-    │       ├── rds_instance.go
-    │       └── rds_instance_test.go
-    └── gcp
-        ├── controller.go
-        └── database
-            ├── cloudsql_instance.go
-            ├── cloudsql_instance_test.go
-            └── database_suite_test.go
-```
-In above example we have two groups with sub-group (tiers):
-- aws/rds
-- gcp/cloudsql
-
-In addition both groups contain types with the same name: `Instance`
-
-### Creating New Resource
-There are several different ways you can approach the creation of the new resources:
-#### Manual
-Good ol' copy & paste of existing resource for both apis and controller (if new controller is needed for your resource) and update the copied code to tailor your needs.
-
-#### Kubebuilder With New Project
-Create and Initialize a new (temporary) kubebuilder project and create new resources: apis and controller(s), then copy them into Crossplane project following the established project organization.
-
-To verify that new artifacts run: 
-```bash
-make build test
-```
+#### Pull Request feedback commits
+When addressing pull request comments, individual commits could be created to clearly indicate the change that results from addressing in each iteration. However, once all comments are addressed and reviewer have signed off, the feedback commits should all be squashed into the original logical change commits.
 
 ## Local Build and Test
 
 To learn more about the developer iteration workflow, including how to locally test new types/controllers, please refer to the [Local Build](cluster/local/README.md) instructions.
+
+
+
+[git documentation]: https://git-scm.com/book/en/v2/Git-Tools-Rewriting-History

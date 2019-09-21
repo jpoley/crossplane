@@ -10,7 +10,7 @@ data:
   credentials: BASE64ENCODED_AZURE_PROVIDER_CREDS
 ---
 # Azure Provider with service principal secret reference - used to provision sql resources
-apiVersion: azure.crossplane.io/v1alpha1
+apiVersion: azure.crossplane.io/v1alpha2
 kind: Provider
 metadata:
   name: azure-sql-provider
@@ -22,23 +22,26 @@ spec:
 ---
 # ResourceClass that defines the blueprint for how a "standard" Azure MySQL Server
 # should be dynamically provisioned
-apiVersion: core.crossplane.io/v1alpha1
-kind: ResourceClass
+apiVersion: database.azure.crossplane.io/v1alpha2
+kind: SQLServerClass
 metadata:
   name: standard
   namespace: crossplane-system
-parameters:
+specTemplate:
   adminLoginName: myadmin
   resourceGroupName: group-westus-1
   location: West US
-  sslEnforced: "false"
-  tier: Basic
-  vcores: "1"
-  family: Gen5
-  storageGB: "25"
-  backupRetentionDays: "7"
-  geoRedundantBackup: "false"
-provisioner: mysqlserver.database.azure.crossplane.io/v1alpha1
-providerRef:
-  name: azure-sql-provider
-reclaimPolicy: Delete
+  sslEnforced: false
+  version: "5.7"
+  pricingTier:
+    tier: Basic
+    vcores: 1
+    family: Gen5
+  storageProfile:
+    storageGB: 25
+    backupRetentionDays: 7
+    geoRedundantBackup: false
+  providerRef:
+    name: azure-sql-provider
+    namespace: crossplane-system
+  reclaimPolicy: Delete

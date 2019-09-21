@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Crossplane Authors.
+Copyright 2019 The Crossplane Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,10 @@ import (
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	util "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -32,19 +34,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	"github.com/crossplaneio/crossplane/pkg/apis/workload/v1alpha1"
-	"github.com/crossplaneio/crossplane/pkg/controller/core"
-	"github.com/crossplaneio/crossplane/pkg/logging"
-	"github.com/crossplaneio/crossplane/pkg/meta"
-	"github.com/crossplaneio/crossplane/pkg/util"
+	runtimev1alpha1 "github.com/crossplaneio/crossplane-runtime/apis/core/v1alpha1"
+	"github.com/crossplaneio/crossplane-runtime/pkg/logging"
+	"github.com/crossplaneio/crossplane-runtime/pkg/meta"
+	"github.com/crossplaneio/crossplane/apis/workload/v1alpha1"
 )
 
 const (
 	controllerName   = "kubernetesapplication.workload.crossplane.io"
 	reconcileTimeout = 1 * time.Minute
-
-	reasonGCResources     = "failed to garbage collect " + v1alpha1.KubernetesApplicationResourceKind
-	reasonSyncingResource = "failed to sync " + v1alpha1.KubernetesApplicationResourceKind
+	requeueOnWait    = 30 * time.Second
 )
 
 var log = logging.Logger.WithName("controller." + controllerName)
@@ -105,6 +104,30 @@ func Add(mgr manager.Manager) error {
 	return errors.Wrapf(err, "cannot watch for %s", v1alpha1.KubernetesApplicationKind)
 }
 
+// Controller is responsible for adding the KubernetesApplication
+// controller and its corresponding reconciler to the manager with any runtime configuration.
+type Controller struct{}
+
+// SetupWithManager creates a new Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
+// and Start it when the Manager is Started.
+func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
+	kube := mgr.GetClient()
+	r := &Reconciler{
+		kube: kube,
+		local: &localCluster{
+			ar: &applicationResourceClient{kube: kube},
+			gc: &applicationResourceGarbageCollector{kube: kube},
+		},
+	}
+
+	return ctrl.NewControllerManagedBy(mgr).
+		Named(controllerName).
+		For(&v1alpha1.KubernetesApplication{}).
+		Owns(&v1alpha1.KubernetesApplicationResource{}).
+		WithEventFilter(&predicate.Funcs{CreateFunc: CreatePredicate, UpdateFunc: UpdatePredicate}).
+		Complete(r)
+}
+
 // localCluster is a syncDeleter that syncs and deletes resources from the same
 // cluster as their controlling application.
 type localCluster struct {
@@ -113,14 +136,13 @@ type localCluster struct {
 }
 
 func (c *localCluster) sync(ctx context.Context, app *v1alpha1.KubernetesApplication) reconcile.Result {
-	app.Status.UnsetAllDeprecatedConditions()
 	app.Status.DesiredResources = len(app.Spec.ResourceTemplates)
 	app.Status.SubmittedResources = 0
 
 	// Garbage collect any resource we control but no longer have templates for.
 	if err := c.gc.process(ctx, app); err != nil {
 		app.Status.State = v1alpha1.KubernetesApplicationStateFailed
-		app.Status.SetFailed(reasonGCResources, err.Error())
+		app.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
 		return reconcile.Result{Requeue: true}
 	}
 
@@ -134,7 +156,7 @@ func (c *localCluster) sync(ctx context.Context, app *v1alpha1.KubernetesApplica
 
 		if err != nil {
 			app.Status.State = v1alpha1.KubernetesApplicationStateFailed
-			app.Status.SetFailed(reasonSyncingResource, err.Error())
+			app.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
 			return reconcile.Result{Requeue: true}
 		}
 	}
@@ -142,21 +164,21 @@ func (c *localCluster) sync(ctx context.Context, app *v1alpha1.KubernetesApplica
 	if app.Status.SubmittedResources == 0 {
 		// Note we set _state_ scheduled, and _status_ pending here. The pending
 		// state and status have different meanings; the former means "pending
-		// scheduling to a Kubernetets cluster" while the latter means "pending
+		// scheduling to a Kubernetes cluster" while the latter means "pending
 		// successful reconciliation".
 		app.Status.State = v1alpha1.KubernetesApplicationStateScheduled
-		app.Status.SetPending()
-		return reconcile.Result{RequeueAfter: core.RequeueOnWait}
+		app.Status.SetConditions(runtimev1alpha1.ReconcileSuccess())
+		return reconcile.Result{RequeueAfter: requeueOnWait}
 	}
 
 	if app.Status.SubmittedResources < app.Status.DesiredResources {
 		app.Status.State = v1alpha1.KubernetesApplicationStatePartial
-		app.Status.SetPending()
-		return reconcile.Result{RequeueAfter: core.RequeueOnWait}
+		app.Status.SetConditions(runtimev1alpha1.ReconcileSuccess())
+		return reconcile.Result{RequeueAfter: requeueOnWait}
 	}
 
 	app.Status.State = v1alpha1.KubernetesApplicationStateSubmitted
-	app.Status.SetReady()
+	app.Status.SetConditions(runtimev1alpha1.ReconcileSuccess())
 	return reconcile.Result{Requeue: false}
 }
 
@@ -198,7 +220,7 @@ func (c *applicationResourceClient) sync(ctx context.Context, template *v1alpha1
 	remote := template.DeepCopy()
 
 	submitted := false
-	err := util.CreateOrUpdate(ctx, c.kube, remote, func() error {
+	_, err := util.CreateOrUpdate(ctx, c.kube, remote, func() error {
 		// Inside this anonymous function ar could either be unchanged (if
 		// it does not exist in the API server) or updated to reflect its
 		// current state according to the API server.
@@ -240,7 +262,7 @@ func (gc *applicationResourceGarbageCollector) process(ctx context.Context, app 
 
 	// Grab a list of all resources in our namespace.
 	resources := &v1alpha1.KubernetesApplicationResourceList{}
-	if err := gc.kube.List(ctx, &client.ListOptions{Namespace: app.GetNamespace()}, resources); err != nil {
+	if err := gc.kube.List(ctx, resources, client.InNamespace(app.GetNamespace())); err != nil {
 		return errors.Wrapf(err, "cannot garbage collect %s", v1alpha1.KubernetesApplicationResourceKind)
 	}
 
@@ -262,7 +284,7 @@ func (gc *applicationResourceGarbageCollector) process(ctx context.Context, app 
 
 		// We control this resource but we don't have a template for it.
 		if err := gc.kube.Delete(ctx, ar); err != nil && !kerrors.IsNotFound(err) {
-			app.Status.SetFailed(reasonGCResources, err.Error())
+			app.Status.SetConditions(runtimev1alpha1.ReconcileError(err))
 		}
 	}
 
