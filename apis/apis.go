@@ -14,39 +14,30 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Generate deepcopy for apis
-//go:generate go run ../vendor/sigs.k8s.io/controller-tools/cmd/controller-gen/main.go object:headerFile=../hack/boilerplate.go.txt paths=./...
-
 // Package apis contains Kubernetes API groups
 package apis
 
 import (
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/crossplaneio/crossplane/apis/cache"
-	"github.com/crossplaneio/crossplane/apis/compute"
-	"github.com/crossplaneio/crossplane/apis/database"
-	"github.com/crossplaneio/crossplane/apis/stacks"
-	"github.com/crossplaneio/crossplane/apis/storage"
-	"github.com/crossplaneio/crossplane/apis/workload"
+	"github.com/crossplane/crossplane/apis/apiextensions"
+	"github.com/crossplane/crossplane/apis/pkg"
+	"github.com/crossplane/crossplane/apis/secrets"
 )
 
 func init() {
 	// Register the types with the Scheme so the components can map objects to GroupVersionKinds and back
 	AddToSchemes = append(AddToSchemes,
-		cache.AddToScheme,
-		compute.AddToScheme,
-		stacks.AddToScheme,
-		database.AddToScheme,
-		storage.AddToScheme,
-		workload.AddToScheme,
+		apiextensions.AddToScheme,
+		pkg.AddToScheme,
+		secrets.AddToScheme,
 	)
 }
 
-// AddToSchemes may be used to add all resources defined in the project to a Scheme
+// AddToSchemes may be used to add all resources defined in the project to a Scheme.
 var AddToSchemes runtime.SchemeBuilder
 
-// AddToScheme adds all Resources to the Scheme
+// AddToScheme adds all Resources to the Scheme.
 func AddToScheme(s *runtime.Scheme) error {
 	return AddToSchemes.AddToScheme(s)
 }

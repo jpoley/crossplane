@@ -1,11 +1,15 @@
 # Resource Connectivity
 
+> Note that while this design document is still broadly accurate, it discusses
+> some defunct concepts like resource classes, and an earlier iteration of
+> resource claims that was unrelated to today's Composition resource claims.
+
 * Owners:
   * Nic Cope (@negz)
   * Javad Taheri (@soorena776)
   * Daniel Mangum (@hasheddan)
 * Reviewers: Crossplane Maintainers
-* Status: Draft
+* Status: Accepted, Revision 1.0
 
 ## Terminology
 
@@ -249,7 +253,7 @@ spec:
 By comparison, a direct translation of the [GKE cluster external resource]'s
 writable API object fields to a Kubernetes YAML specification would be as
 follows. Note that the GKE API contains several deprecated fields, all of which
-are superceded by others (e.g. `nodeConfig` is superceded by `nodePools`). The
+are superseded by others (e.g. `nodeConfig` is superseded by `nodePools`). The
 below translation omits these deprecated fields.
 
 ```yaml
@@ -572,7 +576,7 @@ metadata:
   namespace: crossplane-system
   name: example
 spec:
-  providerRef:
+  providerConfigRef:
     namespace: crossplane-system
     name: example
   nameFormat: mycoolnetwork
@@ -585,7 +589,7 @@ metadata:
   namespace: crossplane-system
   name: example
 spec:
-  providerRef:
+  providerConfigRef:
     namespace: crossplane-system
     name: example
   nameFormat: mycoolsubnetwork
@@ -605,7 +609,7 @@ spec:
 # A resource class that satisfies MySQLInstance claims using CloudSQLInstance
 # managed resources.
 apiVersion: database.gcp.crossplane.io/v1alpha1
-kind: CloudsqlInstanceClass
+kind: CloudSQLInstanceClass
 metadata:
   namespace: crossplane-system
   name: default-mysqlinstance
@@ -684,7 +688,7 @@ resources need to be created beforehand:
   and associating it with a set of subnets.
 
 In addition, `RDSInstance`s also need the following resources, so that they are
-accessible by the the worker nodes:
+accessible by the worker nodes:
 
 * `DBSubnetGroup`: represents a group of `Subnet`s from different availability
   zones,
@@ -960,7 +964,7 @@ ensure connectivity.
 
 We will need to wait until *after* the Wordspress stack is installed to create
 the VNet Rule on the MySQL DB due to the fact that the database will not exist
-until the the stack references our `SQLServerClass` with a claim.
+until the stack references our `SQLServerClass` with a claim.
 
 #### A Model for Deploying Wordpress
 
@@ -979,8 +983,8 @@ type: Opaque
 data:
   credentials: BASE64ENCODED_AZURE_PROVIDER_CREDS
 ---
-apiVersion: azure.crossplane.io/v1alpha1
-kind: Provider
+apiVersion: azure.crossplane.io/v1beta1
+kind: ProviderConfig
 metadata:
   name: example
   namespace: crossplane-system
@@ -997,7 +1001,7 @@ metadata:
 spec:
   name: wordpress-rg
   location: Central US
-  providerRef:
+  providerConfigRef:
     name: example
     namespace: crossplane-system
 ---
@@ -1012,7 +1016,7 @@ spec:
   addressSpace: 10.0.0.0/16
   resourceGroupName: wordpress-rg
   location: Central US
-  providerRef:
+  providerConfigRef:
     name: example
     namespace: crossplane-system
 ---
@@ -1029,7 +1033,7 @@ spec:
    - Microsoft.Sql
   virtualNetworkName: wordpress-vnet
   resourceGroupName: wordpress-rg
-  providerRef:
+  providerConfigRef:
     name: example
     namespace: crossplane-system
 ---
@@ -1096,7 +1100,7 @@ specTemplate:
   serverName: wordpress-mysql
   virtualNetworSubnetID: id(wordpress-subnet)
   resourceGroupName: wordpress-rg
-  providerRef:
+  providerConfigRef:
     name: example
     namespace: crossplane-system
   reclaimPolicy: Delete

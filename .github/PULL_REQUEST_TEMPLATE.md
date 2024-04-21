@@ -1,35 +1,33 @@
 <!--
-Thank you for helping to improve Crossplane!
-
-We strongly recommend you look through our contributor guide at https://git.io/fj2m9
-if this is your first time opening a Crossplane pull request. You can find us in
-https://slack.crossplane.io/messages/dev if you need any help contributing.
+Thank you for helping to improve Crossplane! Please read the contribution docs
+(linked below) if this is your first Crossplane pull request.
 -->
 
 ### Description of your changes
+
 <!--
-Briefly describe what this pull request does. Be sure to direct your reviewers'
-attention to anything that needs special consideration.
+Briefly describe what this pull request does, and how it is covered by tests.
+Be proactive - direct your reviewers' attention to anything that needs special
+consideration.
 
-We love pull requests that resolve an open Crossplane issue. If yours does, you
-can uncomment the below line to indicate which issue your PR fixes, for example
-"Fixes #500":
-
-Fixes #
+We love pull requests that fix an open issue. If yours does, use the below line
+to indicate which issue it fixes, for example "Fixes #500".
 -->
 
-### Checklist
-<!--
-Please run through the below readiness checklist. The first two items are
-relevant to every Crossplane pull request.
--->
-I have:
+Fixes # 
+
+I have: <!--You MUST either [x] check or [ ] ~strike through~ every item.-->
+
+- [ ] Read and followed Crossplane's [contribution process].
 - [ ] Run `make reviewable` to ensure this PR is ready for review.
-- [ ] Ensured this PR contains a neat, self documenting set of commits.
-- [ ] Updated any relevant [documentation], [examples], or [release notes].
-- [ ] Updated the RBAC permissions in [`clusterrole.yaml`] to include any new types.
+- [ ] Added or updated unit tests.
+- [ ] Added or updated e2e tests.
+- [ ] Linked a PR or a [docs tracking issue] to [document this change].
+- [ ] Added `backport release-x.y` labels to auto-backport this PR.
 
-[documentation]: https://github.com/crossplaneio/crossplane/tree/master/docs
-[examples]: https://github.com/crossplaneio/crossplane/tree/master/cluster/examples
-[release notes]: https://github.com/crossplaneio/crossplane/tree/master/PendingReleaseNotes.md
-[`clusterrole.yaml`]: https://github.com/crossplaneio/crossplane/blob/master/cluster/charts/crossplane/templates/clusterrole.yaml
+Need help with this checklist? See the [cheat sheet].
+
+[contribution process]: https://github.com/crossplane/crossplane/tree/master/contributing
+[docs tracking issue]: https://github.com/crossplane/docs/issues/new
+[document this change]: https://docs.crossplane.io/contribute/contribute
+[cheat sheet]: https://github.com/crossplane/crossplane/tree/master/contributing#checklist-cheat-sheet
