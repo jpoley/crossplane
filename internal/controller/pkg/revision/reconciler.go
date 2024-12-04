@@ -19,6 +19,7 @@ package revision
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -46,7 +48,6 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
 
 	pkgmetav1 "github.com/crossplane/crossplane/apis/pkg/meta/v1"
-	pkgmetav1beta1 "github.com/crossplane/crossplane/apis/pkg/meta/v1beta1"
 	v1 "github.com/crossplane/crossplane/apis/pkg/v1"
 	"github.com/crossplane/crossplane/apis/pkg/v1alpha1"
 	"github.com/crossplane/crossplane/apis/pkg/v1beta1"
@@ -76,6 +77,8 @@ const (
 
 	errAddFinalizer    = "cannot add package revision finalizer"
 	errRemoveFinalizer = "cannot remove package revision finalizer"
+
+	errGetPullConfig = "cannot get image pull secret from config"
 
 	errDeactivateRevision = "cannot deactivate package revision"
 
@@ -115,6 +118,7 @@ const (
 
 // Event reasons.
 const (
+	reasonImageConfig  event.Reason = "ImageConfigSelection"
 	reasonParse        event.Reason = "ParsePackage"
 	reasonLint         event.Reason = "LintPackage"
 	reasonDependencies event.Reason = "ResolveDependencies"
@@ -207,6 +211,14 @@ func WithParserBackend(p parser.Backend) ReconcilerOption {
 	}
 }
 
+// WithConfigStore specifies the ConfigStore to use for fetching image
+// configurations.
+func WithConfigStore(c xpkg.ConfigStore) ReconcilerOption {
+	return func(r *Reconciler) {
+		r.config = c
+	}
+}
+
 // WithLinter specifies how the Reconciler should lint a package.
 func WithLinter(l parser.Linter) ReconcilerOption {
 	return func(r *Reconciler) {
@@ -262,6 +274,7 @@ type Reconciler struct {
 	linter         parser.Linter
 	versioner      version.Operations
 	backend        parser.Backend
+	config         xpkg.ConfigStore
 	log            logging.Logger
 	record         event.Recorder
 	features       *feature.Flags
@@ -294,6 +307,7 @@ func SetupProviderRevision(mgr ctrl.Manager, o controller.Options) error {
 		return errors.Wrap(err, errCannotBuildFetcher)
 	}
 
+	log := o.Logger.WithValues("controller", name)
 	cb := ctrl.NewControllerManagedBy(mgr).
 		Named(name).
 		For(&v1.ProviderRevision{}).
@@ -303,17 +317,19 @@ func SetupProviderRevision(mgr ctrl.Manager, o controller.Options) error {
 		Owns(&corev1.ServiceAccount{}).
 		Watches(&v1alpha1.ControllerConfig{}, &EnqueueRequestForReferencingProviderRevisions{
 			client: mgr.GetClient(),
-		})
+		}).
+		Watches(&v1beta1.ImageConfig{}, enqueueProviderRevisionsForImageConfig(mgr.GetClient(), log))
 
 	ro := []ReconcilerOption{
 		WithCache(o.Cache),
 		WithDependencyManager(NewPackageDependencyManager(mgr.GetClient(), dag.NewMapDag, v1beta1.ProviderPackageType)),
-		WithEstablisher(NewAPIEstablisher(mgr.GetClient(), o.Namespace)),
+		WithEstablisher(NewAPIEstablisher(mgr.GetClient(), o.Namespace, o.MaxConcurrentPackageEstablishers)),
 		WithNewPackageRevisionFn(nr),
 		WithParser(parser.New(metaScheme, objScheme)),
 		WithParserBackend(NewImageBackend(fetcher, WithDefaultRegistry(o.DefaultRegistry))),
+		WithConfigStore(xpkg.NewImageConfigStore(mgr.GetClient(), o.Namespace)),
 		WithLinter(xpkg.NewProviderLinter()),
-		WithLogger(o.Logger.WithValues("controller", name)),
+		WithLogger(log),
 		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
 		WithNamespace(o.Namespace),
 		WithServiceAccount(o.ServiceAccount),
@@ -357,15 +373,17 @@ func SetupConfigurationRevision(mgr ctrl.Manager, o controller.Options) error {
 		return errors.Wrap(err, errCannotBuildFetcher)
 	}
 
+	log := o.Logger.WithValues("controller", name)
 	r := NewReconciler(mgr,
 		WithCache(o.Cache),
 		WithDependencyManager(NewPackageDependencyManager(mgr.GetClient(), dag.NewMapDag, v1beta1.ConfigurationPackageType)),
 		WithNewPackageRevisionFn(nr),
-		WithEstablisher(NewAPIEstablisher(mgr.GetClient(), o.Namespace)),
+		WithEstablisher(NewAPIEstablisher(mgr.GetClient(), o.Namespace, o.MaxConcurrentPackageEstablishers)),
 		WithParser(parser.New(metaScheme, objScheme)),
 		WithParserBackend(NewImageBackend(f, WithDefaultRegistry(o.DefaultRegistry))),
+		WithConfigStore(xpkg.NewImageConfigStore(mgr.GetClient(), o.Namespace)),
 		WithLinter(xpkg.NewConfigurationLinter()),
-		WithLogger(o.Logger.WithValues("controller", name)),
+		WithLogger(log),
 		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
 		WithNamespace(o.Namespace),
 		WithServiceAccount(o.ServiceAccount),
@@ -375,14 +393,15 @@ func SetupConfigurationRevision(mgr ctrl.Manager, o controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
 		For(&v1.ConfigurationRevision{}).
+		Watches(&v1beta1.ImageConfig{}, enqueueConfigurationRevisionsForImageConfig(mgr.GetClient(), log)).
 		WithOptions(o.ForControllerRuntime()).
 		Complete(ratelimiter.NewReconciler(name, errors.WithSilentRequeueOnConflict(r), o.GlobalRateLimiter))
 }
 
 // SetupFunctionRevision adds a controller that reconciles FunctionRevisions.
 func SetupFunctionRevision(mgr ctrl.Manager, o controller.Options) error {
-	name := "packages/" + strings.ToLower(v1beta1.FunctionRevisionGroupKind)
-	nr := func() v1.PackageRevision { return &v1beta1.FunctionRevision{} }
+	name := "packages/" + strings.ToLower(v1.FunctionRevisionGroupKind)
+	nr := func() v1.PackageRevision { return &v1.FunctionRevision{} }
 
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
@@ -402,26 +421,29 @@ func SetupFunctionRevision(mgr ctrl.Manager, o controller.Options) error {
 		return errors.Wrap(err, errCannotBuildFetcher)
 	}
 
+	log := o.Logger.WithValues("controller", name)
 	cb := ctrl.NewControllerManagedBy(mgr).
 		Named(name).
-		For(&v1beta1.FunctionRevision{}).
+		For(&v1.FunctionRevision{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ServiceAccount{}).
 		Watches(&v1alpha1.ControllerConfig{}, &EnqueueRequestForReferencingFunctionRevisions{
 			client: mgr.GetClient(),
-		})
+		}).
+		Watches(&v1beta1.ImageConfig{}, enqueueFunctionRevisionsForImageConfig(mgr.GetClient(), log))
 
 	ro := []ReconcilerOption{
 		WithCache(o.Cache),
 		WithDependencyManager(NewPackageDependencyManager(mgr.GetClient(), dag.NewMapDag, v1beta1.FunctionPackageType)),
-		WithEstablisher(NewAPIEstablisher(mgr.GetClient(), o.Namespace)),
+		WithEstablisher(NewAPIEstablisher(mgr.GetClient(), o.Namespace, o.MaxConcurrentPackageEstablishers)),
 		WithNewPackageRevisionFn(nr),
 		WithParser(parser.New(metaScheme, objScheme)),
 		WithParserBackend(NewImageBackend(fetcher, WithDefaultRegistry(o.DefaultRegistry))),
+		WithConfigStore(xpkg.NewImageConfigStore(mgr.GetClient(), o.Namespace)),
 		WithLinter(xpkg.NewFunctionLinter()),
-		WithLogger(o.Logger.WithValues("controller", name)),
+		WithLogger(log),
 		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
 		WithNamespace(o.Namespace),
 		WithServiceAccount(o.ServiceAccount),
@@ -536,6 +558,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	if c := pr.GetCondition(xpv1.ReconcilePaused().Type); c.Reason == xpv1.ReconcilePaused().Reason {
 		pr.CleanConditions()
+		// Persist the removal of conditions and return. We'll be requeued
+		// with the updated status and resume reconciliation.
+		return reconcile.Result{}, errors.Wrap(r.client.Status().Update(ctx, pr), errUpdateStatus)
+	}
+
+	if r.features.Enabled(features.EnableAlphaSignatureVerification) {
+		// Wait for signature verification to complete before proceeding.
+		if cond := pr.GetCondition(v1.TypeVerified); cond.Status != corev1.ConditionTrue {
+			log.Debug("Waiting for signature verification controller to complete verification.", "condition", cond)
+			// Initialize the installed condition if they are not already set to
+			// communicate the status of the package.
+			if pr.GetCondition(v1.TypeHealthy).Status == corev1.ConditionUnknown {
+				pr.SetConditions(v1.AwaitingVerification())
+				return reconcile.Result{}, errors.Wrap(r.client.Status().Update(ctx, pr), "cannot update status with awaiting verification")
+			}
+			return reconcile.Result{}, nil
+		}
 	}
 
 	if err := r.revision.AddFinalizer(ctx, pr); err != nil {
@@ -544,6 +583,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 		err = errors.Wrap(err, errAddFinalizer)
 		r.record.Event(pr, event.Warning(reasonSync, err))
+		return reconcile.Result{}, err
+	}
+
+	imageConfig, pullSecretFromConfig, err := r.config.PullSecretFor(ctx, pr.GetSource())
+	if err != nil {
+		err = errors.Wrap(err, errGetPullConfig)
+		pr.SetConditions(v1.Unhealthy().WithMessage(err.Error()))
+		_ = r.client.Status().Update(ctx, pr)
+
+		r.record.Event(pr, event.Warning(reasonImageConfig, err))
+
 		return reconcile.Result{}, err
 	}
 
@@ -561,6 +611,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			r.record.Event(pr, event.Warning(reasonSync, err))
 
 			return reconcile.Result{}, err
+		}
+
+		if pullSecretFromConfig != "" {
+			opts = append(opts, RuntimeManifestBuilderWithPullSecrets(pullSecretFromConfig))
 		}
 
 		runtimeManifestBuilder = NewRuntimeManifestBuilder(pwr, r.namespace, opts...)
@@ -658,8 +712,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	// If we didn't get a ReadCloser from cache, we need to get it from image.
 	if rc == nil {
+		bo := []parser.BackendOption{PackageRevision(pr)}
+		if imageConfig != "" {
+			bo = append(bo, PullSecretFromConfig(pullSecretFromConfig))
+			// We only record this event here, package is not in cache, and
+			// we are about to fetch the image. This way we avoid emitting
+			// excessive events in each reconcile, but once per image pull.
+			log.Debug("Selected pull secret from image config store", "image", pr.GetSource(), "imageConfig", imageConfig, "pullSecret", pullSecretFromConfig)
+			r.record.Event(pr, event.Normal(reasonImageConfig, fmt.Sprintf("Selected pullSecret %q from ImageConfig %q for registry authentication", pullSecretFromConfig, imageConfig)))
+		}
+
 		// Initialize parser backend to obtain package contents.
-		imgrc, err := r.backend.Init(ctx, PackageRevision(pr))
+		imgrc, err := r.backend.Init(ctx, bo...)
 		if err != nil {
 			err = errors.Wrap(err, errInitParserBackend)
 			pr.SetConditions(v1.Unhealthy().WithMessage(err.Error()))
@@ -740,7 +804,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, err
 	}
 
-	pkgMeta, _ := xpkg.TryConvert(pkg.GetMeta()[0], &pkgmetav1.Provider{}, &pkgmetav1.Configuration{}, &pkgmetav1beta1.Function{})
+	pkgMeta, _ := xpkg.TryConvert(pkg.GetMeta()[0], &pkgmetav1.Provider{}, &pkgmetav1.Configuration{}, &pkgmetav1.Function{})
 
 	pmo := pkgMeta.(metav1.Object) //nolint:forcetypeassert // Will always be metav1.Object.
 	meta.AddLabels(pr, pmo.GetLabels())
@@ -936,4 +1000,97 @@ func (r *Reconciler) runtimeManifestBuilderOptions(ctx context.Context, pwr v1.P
 	}
 
 	return opts, nil
+}
+
+func enqueueProviderRevisionsForImageConfig(kube client.Client, log logging.Logger) handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+		ic, ok := o.(*v1beta1.ImageConfig)
+		if !ok {
+			return nil
+		}
+		// We only care about ImageConfigs that have a pull secret.
+		if ic.Spec.Registry == nil || ic.Spec.Registry.Authentication == nil || ic.Spec.Registry.Authentication.PullSecretRef.Name == "" {
+			return nil
+		}
+		// Enqueue all ProviderRevision matching the prefixes in the ImageConfig.
+		l := &v1.ProviderRevisionList{}
+		if err := kube.List(ctx, l); err != nil {
+			// Nothing we can do, except logging, if we can't list ProviderRevisions.
+			log.Debug("Cannot list provider revisions while attempting to enqueue from ImageConfig", "error", err)
+			return nil
+		}
+
+		var matches []reconcile.Request
+		for _, p := range l.Items {
+			for _, m := range ic.Spec.MatchImages {
+				if strings.HasPrefix(p.GetSource(), m.Prefix) {
+					log.Debug("Enqueuing provider revision for image config", "providerRevision", p.Name, "imageConfig", ic.Name)
+					matches = append(matches, reconcile.Request{NamespacedName: types.NamespacedName{Name: p.Name}})
+				}
+			}
+		}
+		return matches
+	})
+}
+
+func enqueueConfigurationRevisionsForImageConfig(kube client.Client, log logging.Logger) handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+		ic, ok := o.(*v1beta1.ImageConfig)
+		if !ok {
+			return nil
+		}
+		// We only care about ImageConfigs that have a pull secret.
+		if ic.Spec.Registry == nil || ic.Spec.Registry.Authentication == nil || ic.Spec.Registry.Authentication.PullSecretRef.Name == "" {
+			return nil
+		}
+		// Enqueue all ConfigurationRevision matching the prefixes in the ImageConfig.
+		l := &v1.ConfigurationRevisionList{}
+		if err := kube.List(ctx, l); err != nil {
+			// Nothing we can do, except logging, if we can't list ConfigurationRevisions.
+			log.Debug("Cannot list configuration revisions while attempting to enqueue from ImageConfig", "error", err)
+			return nil
+		}
+
+		var matches []reconcile.Request
+		for _, p := range l.Items {
+			for _, m := range ic.Spec.MatchImages {
+				if strings.HasPrefix(p.GetSource(), m.Prefix) {
+					log.Debug("Enqueuing configuration revision for image config", "configurationRevision", p.Name, "imageConfig", ic.Name)
+					matches = append(matches, reconcile.Request{NamespacedName: types.NamespacedName{Name: p.Name}})
+				}
+			}
+		}
+		return matches
+	})
+}
+
+func enqueueFunctionRevisionsForImageConfig(kube client.Client, log logging.Logger) handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+		ic, ok := o.(*v1beta1.ImageConfig)
+		if !ok {
+			return nil
+		}
+		// We only care about ImageConfigs that have a pull secret.
+		if ic.Spec.Registry == nil || ic.Spec.Registry.Authentication == nil || ic.Spec.Registry.Authentication.PullSecretRef.Name == "" {
+			return nil
+		}
+		// Enqueue all FunctionRevision matching the prefixes in the ImageConfig.
+		l := &v1.FunctionRevisionList{}
+		if err := kube.List(ctx, l); err != nil {
+			// Nothing we can do, except logging, if we can't list FunctionRevisions.
+			log.Debug("Cannot list function revisions while attempting to enqueue from ImageConfig", "error", err)
+			return nil
+		}
+
+		var matches []reconcile.Request
+		for _, p := range l.Items {
+			for _, m := range ic.Spec.MatchImages {
+				if strings.HasPrefix(p.GetSource(), m.Prefix) {
+					log.Debug("Enqueuing function revision for image config", "functionRevision", p.Name, "imageConfig", ic.Name)
+					matches = append(matches, reconcile.Request{NamespacedName: types.NamespacedName{Name: p.Name}})
+				}
+			}
+		}
+		return matches
+	})
 }

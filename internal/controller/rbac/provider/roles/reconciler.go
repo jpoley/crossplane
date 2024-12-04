@@ -98,7 +98,7 @@ func (fn ClusterRoleRenderFn) RenderClusterRoles(pr *v1.ProviderRevision, rs []R
 // series of opinionated ClusterRoles that may be bound to allow access to the
 // resources it defines.
 func Setup(mgr ctrl.Manager, o controller.Options) error {
-	name := "rbac/" + strings.ToLower(v1.ProviderRevisionGroupKind)
+	name := "rbac-roles/" + strings.ToLower(v1.ProviderRevisionGroupKind)
 
 	if o.AllowClusterRole == "" {
 		r := NewReconciler(mgr,
@@ -333,7 +333,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	applied := make([]string, 0)
 	for _, cr := range r.rbac.RenderClusterRoles(pr, resources) {
-		cr := cr // Pin range variable so we can take its address.
 		log := log.WithValues("role-name", cr.GetName())
 		origRV := ""
 		err := r.client.Apply(ctx, &cr,

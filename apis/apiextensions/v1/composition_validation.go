@@ -32,7 +32,6 @@ func (c *Composition) Validate() (warns []string, errs field.ErrorList) {
 		c.validatePatchSets,
 		c.validateResources,
 		c.validatePipeline,
-		c.validateEnvironment,
 	}
 	for _, f := range validations {
 		errs = append(errs, f()...)
@@ -69,6 +68,23 @@ func (c *Composition) validatePipeline() (errs field.ErrorList) {
 			errs = append(errs, field.Duplicate(field.NewPath("spec", "pipeline").Index(i).Child("step"), f.Step))
 		}
 		seen[f.Step] = true
+
+		seenCred := map[string]bool{}
+		for j, cs := range f.Credentials {
+			if seenCred[cs.Name] {
+				errs = append(errs, field.Duplicate(field.NewPath("spec", "pipeline").Index(i).Child("credentials").Index(j).Child("name"), cs.Name))
+			}
+			seenCred[cs.Name] = true
+
+			switch cs.Source {
+			case FunctionCredentialsSourceSecret:
+				if cs.SecretRef == nil {
+					errs = append(errs, field.Required(field.NewPath("spec", "pipeline").Index(i).Child("credentials").Index(j).Child("secretRef"), "must be specified when source is Secret"))
+				}
+			case FunctionCredentialsSourceNone:
+				// No requirements here.
+			}
+		}
 	}
 	return errs
 }
@@ -172,15 +188,4 @@ func (c *Composition) validateResourceNames() (errs field.ErrorList) {
 		seen[name] = true
 	}
 	return errs
-}
-
-// validateEnvironment checks that the environment is logically valid.
-func (c *Composition) validateEnvironment() field.ErrorList {
-	if c.Spec.Environment == nil {
-		return nil
-	}
-	if errs := verrors.WrapFieldErrorList(c.Spec.Environment.Validate(), field.NewPath("spec", "environment")); len(errs) > 0 {
-		return errs
-	}
-	return nil
 }

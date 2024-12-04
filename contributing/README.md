@@ -10,13 +10,129 @@ us on [Slack]. Please also take a look at our [code of conduct], which details
 how contributors are expected to conduct themselves as part of the Crossplane
 community.
 
+## Getting Started Contributing to Crossplane
+
+There is always lots of exciting work going on in the Crossplane project and
+there are many places where new contributors can start to get more involved.
+This section will help you understand the various opportunities across the
+community and where you can start contributing.
+
+To see all of the ways to connect with the rest of the community (community
+meetings, special interest groups, Slack discussions, etc.), please refer to the
+[Get Involved] section of the main README.
+
+The CNCF also maintains a very helpful [contributor
+guide][cncf-contributor-guide] that gives an excellent overview on how to get
+into open source in general and start making your first contributions. We highly
+recommend browsing this guide to kick start your contributor journey.
+
+### Crossplane Core Contributions
+
+The roadmap for improvements, fixes, and work items for Crossplane's [core] and
+[runtime] are triaged and tracked in a single [GitHub project]. Here are a few
+useful views of that project to help new contributors find areas where help is
+needed:
+
+* Issues that are useful for the project, but have lower complexity, are a great
+  fit for folks just beginning to get involved in the code base. These issues
+  are identified by the `good first issue` label.
+  * [Good first issues]
+* High priority work items are marked as P0/P1. These issues tend to have the
+  biggest impact on the project, but also tend to be complex and challenging.
+  * [P0/P1 issues with no owner]
+  * [All P0/P1 issues]
+
+### Extensions Ecosystem Contributions
+
+Now that the core functionality of Crossplane is considered fairly mature and
+stable, the vibrant ecosystem of Crossplane extensions has the most
+opportunities for contributors to get involved.  There is a wide range of
+Providers and Functions that could use your help to continue maturing and
+delighting the community.
+
+* Providers
+  * If a Provider you need doesn't exist yet, you can create a [new provider] to
+    fill this gap in the ecosystem.
+  * The [Upjet framework] has become very popular for creating and maintaining
+    Providers, and has lots of functionality to invest in.
+    * The special interest group for Upjet is a great place to meet and
+      collaborate with other Upjet contributors: [#sig-upjet][sig-upjet-slack]
+  * [`provider-kubernetes`] and [`provider-helm`] are very popular utility
+    Providers and thus contributions to these Providers have a lot of impact.
+  * Some existing Providers need new maintainers to step up from the community
+    to continue keeping them up to date and fix user reported issues. Feel free
+    to reach out to current maintainers or the [steering committee] if you want
+    to get involved with an existing Provider that you'd like to see more
+    active.
+* Functions
+  * The community is creating new Functions all the time, but there are still
+    many creative ideas left to fill unmet needs in the ecosystem that are just
+    waiting for your contribution. Get inspired with your own ideas by browsing
+    all the existing [`crossplane-contrib` Functions].
+  * [`function-patch-and-transform`] and [`function-go-templating`] are very
+    popular functions that have lots of interesting features and fixes to
+    contribute to.
+  * [`golang`][golang-sdk] and [`python`][python-sdk] have SDKs to accelerate
+    Function developers to write functions using these languages and both
+    welcome contributions. Additionally, new SDKs created by particularly
+    motivated contributors to help Function developers work in other languages
+    would be very welcomed.
+
+### Docs Contributions
+
+The [Crossplane docs] are seen by a large number of users both getting started
+with Crossplane and referencing more nuanced details after they are running in
+production. There's a large surface area of material to cover in the docs and
+therefore many ways to contribute. The docs is also a great place to start
+contributing because it does not require a highly technical software developer
+and coding skill set.
+
+* The [docs contributing guide] is very thorough and an excellent resource to
+  help you understand everything needed to contribute to the docs yourself. You
+  can learn about the style recommendations, how to utilize advanced
+  functionality to create a rich experience, and how to build and test the docs
+  locally.
+* Browse the existing backlog of [docs issues] to see if there's any knowledge
+  or requests there you can already help with.
+* Documentation improvements are always welcome, no matter the size, both big
+  and small
+  * If you can't find the information you're looking for in the docs, consider
+    [opening an issue][open-docs-issue] to request it.
+  * If you find something incorrect or misleading, consider [opening an
+    PR][open-docs-pr] to contribute the fix yourself.
+
+## Establishing a Development Environment
+
+> The Crossplane project consists of several repositories under the crossplane
+> and crossplane-contrib GitHub organisations. We're experimenting with
+> [Earthly] in this repository (crossplane) and crossplane-runtime. Most other
+> repositories use a `Makefile`. To establish a development environment for a
+> repository with a `Makefile`, try running `make && make help`.
+
+Crossplane is written in [Go]. You don't need to have Go installed to contribute
+code to Crossplane but it helps to use an editor that understands Go.
+
+To setup a Crossplane development environment:
+
+1. Fork and clone this repository.
+1. Install [Docker][get-docker] and [Earthly][get-earthly].
+
+Use the `earthly` command to build and test Crossplane. Run `earthly doc` to see
+available build targets.
+
+Useful targets include:
+
+* `earthly +reviewable` - Run code generators, linters, and unit tests.
+* `earthly -P +e2e` - Run end-to-end tests.
+* `earthly +hack` - Build Crossplane and deploy it to a local `kind` cluster.
+
 ## Checklist Cheat Sheet
 
 Wondering whether something on the pull request checklist applies to your PR?
 Generally:
 
 * Everyone must read and follow this contribution process.
-* Every PR must run (and pass) `make reviewable`.
+* Every PR must run (and pass) `earthly +reviewable`.
 * Most PRs that touch code should touch unit tests. We want ~80% coverage.
 * Any significant feature should be covered by E2E tests. If you're adding a new
   feature, you should probably be adding or updating E2Es.
@@ -63,7 +179,7 @@ Ensure each of your commits is signed-off in compliance with the [Developer
 Certificate of Origin] by using `git commit -s`. The Crossplane project highly
 values readable, idiomatic Go code. Familiarise yourself with the
 [Coding Style](#coding-style) section below and try to preempt any comments your
-reviewers would otherwise leave. Run `make reviewable` to lint your change.
+reviewers would otherwise leave. Run `earthly +reviewable` to lint your change.
 
 All Crossplane features must be covered by unit **and** end-to-end (E2E) tests.
 
@@ -820,68 +936,19 @@ func TestExample(t *testing.T) {
 }
 ```
 
-## Establishing a Development Environment
-
-The Crossplane project consists of several repositories under the crossplane and
-crossplane-contrib GitHub organisations. Most of these projects use the Upbound
-[build submodule]; a library of common Makefiles. Establishing a development
-environment typically requires:
-
-1. Forking and cloning the repository you wish to work on.
-1. Installing development dependencies.
-1. Running `make` to establish the build submodule.
-
-Run `make help` for information on the available Make targets. Useful targets
-include:
-
-* `make reviewable` - Run code generation, linters, and unit tests.
-* `make e2e` - Run end-to-end tests.
-* `make` - Build Crossplane.
-
-Once you've built Crossplane you can deploy it to a Kubernetes cluster of your
-choice. [`kind`] (Kubernetes in Docker) is a good choice for development. The
-`kind.sh` script contains several utilities to deploy and run a development
-build of Crossplane to `kind`:
-
-```bash
-# Build Crossplane locally.
-make
-
-# See what commands are available.
-./cluster/local/kind.sh help
-
-# Start a new kind cluster. Specifying KUBE_IMAGE is optional.
-KUBE_IMAGE=kindest/node:v1.27.1 ./cluster/local/kind.sh up
-
-# Use Helm to deploy the local build of Crossplane.
-./cluster/local/kind.sh helm-install
-
-# Use Helm to upgrade the local build of Crossplane.
-./cluster/local/kind.sh helm-upgrade
-```
-
-When iterating rapidly on a change it can be faster to run Crossplane as a local
-process, rather than as a pod deployed by Helm to your Kubernetes cluster. Use
-Helm to install your local Crossplane build per the above instructions, then:
-
-```bash
-# Stop the Helm-deployed Crossplane pod.
-kubectl -n crossplane-system scale deploy crossplane --replicas=0
-
-# Run Crossplane locally; it should connect to your kind cluster if said cluster
-# is your active kubectl context. You can also go run cmd/crossplane/main.go.
-make run
-```
-
 [Slack]: https://slack.crossplane.io/
-[code of conduct]: https://github.com/cncf/foundation/blob/master/code-of-conduct.md
-[build submodule]: https://github.com/upbound/build/
+[code of conduct]: https://github.com/cncf/foundation/blob/main/code-of-conduct.md
+[Earthly]: https://docs.earthly.dev
+[get-docker]: https://docs.docker.com/get-docker
+[get-earthly]: https://earthly.dev/get-earthly
+[Go]: https://go.dev
+[build submodule]: https://github.com/crossplane/build/
 [`kind`]: https://kind.sigs.k8s.io/
 [Crossplane release cycle]: https://docs.crossplane.io/knowledge-base/guides/release-cycle
-[good git commit hygiene]: https://www.futurelearn.com/info/blog/telling-stories-with-your-git-history
+[good git commit hygiene]: https://www.futurelearn.com/info/blog/telling-stories-with-your-git-history?category=using-futurelearn
 [Developer Certificate of Origin]: https://github.com/apps/dco
-[code review comments]: https://github.com/golang/go/wiki/CodeReviewComments
-[test review comments]: https://github.com/golang/go/wiki/TestComments
+[code review comments]: https://go.dev/wiki/CodeReviewComments
+[test review comments]: https://go.dev/wiki/TestComments
 [E2E readme]: ../test/e2e/README.md
 [docs]: https://github.com/crossplane/docs
 [Effective Go]: https://golang.org/doc/effective_go
@@ -896,3 +963,27 @@ make run
 [Reviewers]: ../OWNERS.md#reviewers
 [Maintainers]: ../OWNERS.md#maintainers
 [#4514]: https://github.com/crossplane/crossplane/issues/4514
+[Get Involved]: ../README.md#get-involved
+[GitHub project]: https://github.com/orgs/crossplane/projects/20/views/9?pane=info
+[P0/P1 issues with no owner]: https://github.com/orgs/crossplane/projects/20/views/1?filterQuery=priority%3AP0%2CP1+no%3Aassignee+-status%3ADone%2CIcebox+&layout=table
+[All P0/P1 issues]: https://github.com/orgs/crossplane/projects/20/views/6
+[Good first issues]: https://github.com/crossplane/crossplane/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22
+[core]: https://github.com/crossplane/crossplane
+[runtime]: https://github.com/crossplane/crossplane-runtime
+[new provider]: https://github.com/crossplane/crossplane/discussions/5194
+[Upjet framework]: https://github.com/crossplane/upjet/issues
+[sig-upjet-slack]: https://crossplane.slack.com/archives/C05T19TB729
+[steering committee]: ../GOVERNANCE.md#contact-info
+[`provider-helm`]: https://github.com/crossplane-contrib/provider-helm/issues
+[`provider-kubernetes`]: https://github.com/crossplane-contrib/provider-kubernetes/issues
+[`crossplane-contrib` Functions]: https://github.com/orgs/crossplane-contrib/repositories?language=&q=function-+in%3Aname&sort=&type=all
+[`function-patch-and-transform`]: https://github.com/crossplane-contrib/function-patch-and-transform/issues
+[`function-go-templating`]: https://github.com/crossplane-contrib/function-go-templating/issues
+[golang-sdk]: https://github.com/crossplane/function-sdk-go/issues
+[python-sdk]: https://github.com/crossplane/function-sdk-python/issues
+[cncf-contributor-guide]: https://contribute.cncf.io/contributors/getting-started/
+[Crossplane docs]: https://docs.crossplane.io/
+[open-docs-issue]: https://github.com/crossplane/docs/issues/new/choose
+[open-docs-pr]: https://github.com/crossplane/docs/compare
+[docs issues]: https://github.com/crossplane/docs/issues
+[docs contributing guide]: https://docs.crossplane.io/contribute/

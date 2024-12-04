@@ -28,7 +28,6 @@ import (
 
 	v1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
 	pkgmetav1 "github.com/crossplane/crossplane/apis/pkg/meta/v1"
-	pkgmetav1beta1 "github.com/crossplane/crossplane/apis/pkg/meta/v1beta1"
 	"github.com/crossplane/crossplane/internal/version"
 )
 
@@ -98,7 +97,8 @@ func IsConfiguration(o runtime.Object) error {
 
 // IsFunction checks that an object is a Function meta type.
 func IsFunction(o runtime.Object) error {
-	if _, ok := o.(*pkgmetav1beta1.Function); !ok {
+	po, _ := TryConvert(o, &pkgmetav1.Function{})
+	if _, ok := po.(*pkgmetav1.Function); !ok {
 		return errors.New(errNotMetaFunction)
 	}
 	return nil
@@ -108,7 +108,7 @@ func IsFunction(o runtime.Object) error {
 // compatible with the package constraints.
 func PackageCrossplaneCompatible(v version.Operations) parser.ObjectLinterFn {
 	return func(o runtime.Object) error {
-		p, ok := TryConvertToPkg(o, &pkgmetav1.Provider{}, &pkgmetav1.Configuration{}, &pkgmetav1beta1.Function{})
+		p, ok := TryConvertToPkg(o, &pkgmetav1.Provider{}, &pkgmetav1.Configuration{}, &pkgmetav1.Function{})
 		if !ok {
 			return errors.New(errNotMeta)
 		}
@@ -129,7 +129,7 @@ func PackageCrossplaneCompatible(v version.Operations) parser.ObjectLinterFn {
 
 // PackageValidSemver checks that the package uses valid semver ranges.
 func PackageValidSemver(o runtime.Object) error {
-	p, ok := TryConvertToPkg(o, &pkgmetav1.Provider{}, &pkgmetav1.Configuration{}, &pkgmetav1beta1.Function{})
+	p, ok := TryConvertToPkg(o, &pkgmetav1.Provider{}, &pkgmetav1.Configuration{}, &pkgmetav1.Function{})
 	if !ok {
 		return errors.New(errNotMeta)
 	}

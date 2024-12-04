@@ -19,6 +19,7 @@ package offered
 import (
 	"context"
 
+	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -30,10 +31,10 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/composite"
 
 	v1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
+	"github.com/crossplane/crossplane/internal/xcrd"
 )
 
-// OffersClaim accepts objects that are a CompositeResourceDefinition and offer
-// a composite resource claim.
+// OffersClaim accepts any CompositeResourceDefinition that offers a claim.
 func OffersClaim() resource.PredicateFn {
 	return func(obj runtime.Object) bool {
 		d, ok := obj.(*v1.CompositeResourceDefinition)
@@ -44,8 +45,24 @@ func OffersClaim() resource.PredicateFn {
 	}
 }
 
+// IsClaimCRD accepts any CustomResourceDefinition that represents a Claim.
+func IsClaimCRD() resource.PredicateFn {
+	return func(obj runtime.Object) bool {
+		d, ok := obj.(*extv1.CustomResourceDefinition)
+		if !ok {
+			return false
+		}
+		for _, c := range d.Spec.Names.Categories {
+			if c == xcrd.CategoryClaim {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 type adder interface {
-	Add(item any)
+	Add(item reconcile.Request)
 }
 
 // EnqueueRequestForClaim enqueues a reconcile.Request for the
@@ -54,26 +71,26 @@ type EnqueueRequestForClaim struct{}
 
 // Create adds a NamespacedName for the supplied CreateEvent if its Object is a
 // ClaimReferencer.
-func (e *EnqueueRequestForClaim) Create(_ context.Context, evt event.CreateEvent, q workqueue.RateLimitingInterface) {
+func (e *EnqueueRequestForClaim) Create(_ context.Context, evt event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	addClaim(evt.Object, q)
 }
 
 // Update adds a NamespacedName for the supplied UpdateEvent if its Objects are
 // ClaimReferencers.
-func (e *EnqueueRequestForClaim) Update(_ context.Context, evt event.UpdateEvent, q workqueue.RateLimitingInterface) {
+func (e *EnqueueRequestForClaim) Update(_ context.Context, evt event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	addClaim(evt.ObjectOld, q)
 	addClaim(evt.ObjectNew, q)
 }
 
 // Delete adds a NamespacedName for the supplied DeleteEvent if its Object is a
 // ClaimReferencer.
-func (e *EnqueueRequestForClaim) Delete(_ context.Context, evt event.DeleteEvent, q workqueue.RateLimitingInterface) {
+func (e *EnqueueRequestForClaim) Delete(_ context.Context, evt event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	addClaim(evt.Object, q)
 }
 
 // Generic adds a NamespacedName for the supplied GenericEvent if its Object is
 // a ClaimReferencer.
-func (e *EnqueueRequestForClaim) Generic(_ context.Context, evt event.GenericEvent, q workqueue.RateLimitingInterface) {
+func (e *EnqueueRequestForClaim) Generic(_ context.Context, evt event.GenericEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	addClaim(evt.Object, q)
 }
 

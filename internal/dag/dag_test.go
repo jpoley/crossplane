@@ -37,7 +37,6 @@ func (s *simpleNode) Neighbors() []Node {
 	nodes := make([]Node, len(s.neighbors))
 	i := 0
 	for _, r := range s.neighbors {
-		r := r // Pin range variable so we can take its address.
 		nodes[i] = &r
 		i++
 	}
@@ -55,10 +54,19 @@ func (s *simpleNode) AddNeighbors(nodes ...Node) error {
 	return nil
 }
 
+func (s *simpleNode) GetConstraints() string {
+	return ""
+}
+
+func (s *simpleNode) GetParentConstraints() []string {
+	return nil
+}
+
+func (s *simpleNode) AddParentConstraints([]string) {}
+
 func toNodes(n []simpleNode) []Node {
 	nodes := make([]Node, len(n))
 	for i, r := range n {
-		r := r // Pin range variable so we can take its address.
 		nodes[i] = &r
 	}
 	return nodes

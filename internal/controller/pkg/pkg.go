@@ -24,32 +24,33 @@ import (
 	"github.com/crossplane/crossplane/internal/controller/pkg/manager"
 	"github.com/crossplane/crossplane/internal/controller/pkg/resolver"
 	"github.com/crossplane/crossplane/internal/controller/pkg/revision"
+	"github.com/crossplane/crossplane/internal/controller/pkg/signature"
 	"github.com/crossplane/crossplane/internal/features"
 )
 
 // Setup package controllers.
 func Setup(mgr ctrl.Manager, o controller.Options) error {
-	for _, setup := range []func(ctrl.Manager, controller.Options) error{
+	setupFuncs := []func(ctrl.Manager, controller.Options) error{
 		manager.SetupConfiguration,
 		manager.SetupProvider,
+		manager.SetupFunction,
 		resolver.Setup,
 		revision.SetupConfigurationRevision,
 		revision.SetupProviderRevision,
-	} {
-		if err := setup(mgr, o); err != nil {
-			return err
-		}
+		revision.SetupFunctionRevision,
 	}
 
-	// We only want to start the Function controllers if Functions are enabled.
-	if o.Features.Enabled(features.EnableBetaCompositionFunctions) {
-		for _, setup := range []func(ctrl.Manager, controller.Options) error{
-			manager.SetupFunction,
-			revision.SetupFunctionRevision,
-		} {
-			if err := setup(mgr, o); err != nil {
-				return err
-			}
+	if o.Features.Enabled(features.EnableAlphaSignatureVerification) {
+		setupFuncs = append(setupFuncs, []func(c ctrl.Manager, options controller.Options) error{
+			signature.SetupProviderRevision,
+			signature.SetupConfigurationRevision,
+			signature.SetupFunctionRevision,
+		}...)
+	}
+
+	for _, setup := range setupFuncs {
+		if err := setup(mgr, o); err != nil {
+			return err
 		}
 	}
 

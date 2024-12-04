@@ -31,7 +31,6 @@ type SimpleFuzzNode struct {
 func toNodesFuzz(n []SimpleFuzzNode) []Node {
 	nodes := make([]Node, len(n))
 	for i, r := range n {
-		r := r // Pin range variable so we can take its address.
 		nodes[i] = &r
 	}
 	return nodes
@@ -59,12 +58,21 @@ func (s *SimpleFuzzNode) Neighbors() []Node {
 	nodes := make([]Node, len(s.NeighborsField))
 	i := 0
 	for _, r := range s.NeighborsField {
-		r := r // Pin range variable so we can take its address.
 		nodes[i] = &r
 		i++
 	}
 	return nodes
 }
+
+func (s *SimpleFuzzNode) GetConstraints() string {
+	return ""
+}
+
+func (s *SimpleFuzzNode) GetParentConstraints() []string {
+	return nil
+}
+
+func (s *SimpleFuzzNode) AddParentConstraints([]string) {}
 
 func FuzzDag(f *testing.F) {
 	f.Fuzz(func(_ *testing.T, data []byte) {
