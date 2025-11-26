@@ -28,18 +28,18 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
-	commonIO "github.com/crossplane/crossplane/cmd/crank/beta/convert/io"
+	commonIO "github.com/crossplane/crossplane/v2/cmd/crank/beta/convert/io"
 )
 
 // Cmd arguments and flags for converting a Composition to use function-environment-configs.
 type Cmd struct {
 	// Arguments.
-	InputFile string `arg:"" default:"-" help:"The Composition file to be converted. If not specified or '-', stdin will be used." optional:"" type:"path"`
+	InputFile string `arg:"" default:"-" help:"The Composition file to be converted. If not specified or '-', stdin will be used." optional:"" predictor:"file" type:"path"`
 
 	// Flags.
-	OutputFile string `help:"The file to write the generated Composition to. If not specified, stdout will be used." placeholder:"PATH" short:"o" type:"path"`
+	OutputFile string `help:"The file to write the generated Composition to. If not specified, stdout will be used." placeholder:"PATH" predictor:"file" short:"o" type:"path"`
 
 	FunctionEnvironmentConfigRef string `default:"function-environment-configs" help:"Name of the existing function-environment-configs Function, to be used to reference it." name:"function-environment-configs-ref"`
 
@@ -93,6 +93,7 @@ func (c *Cmd) Run(k *kong.Context) error {
 	if err != nil {
 		return errors.Wrap(err, "Error generating new Composition")
 	}
+
 	if out == nil {
 		_, err = fmt.Fprintf(k.Stderr, "No changes needed.\n")
 		return errors.Wrap(err, "unable to write to stderr")
@@ -104,12 +105,15 @@ func (c *Cmd) Run(k *kong.Context) error {
 	}
 
 	output := k.Stdout
+
 	if outputFileName := c.OutputFile; outputFileName != "" {
 		f, err := c.fs.OpenFile(outputFileName, os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
 			return errors.Wrap(err, "Unable to open output file")
 		}
+
 		defer func() { _ = f.Close() }()
+
 		output = f
 	}
 

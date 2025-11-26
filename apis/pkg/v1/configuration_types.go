@@ -19,7 +19,7 @@ package v1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 )
 
 // +kubebuilder:object:root=true
@@ -65,7 +65,8 @@ type ConfigurationStatus struct {
 type ConfigurationList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Configuration `json:"items"`
+
+	Items []Configuration `json:"items"`
 }
 
 // +kubebuilder:object:root=true
@@ -79,13 +80,13 @@ type ConfigurationList struct {
 // ConfigurationRevisions.
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
-// +kubebuilder:printcolumn:name="HEALTHY",type="string",JSONPath=".status.conditions[?(@.type=='Healthy')].status"
-// +kubebuilder:printcolumn:name="REVISION",type="string",JSONPath=".spec.revision"
+// +kubebuilder:printcolumn:name="HEALTHY",type="string",JSONPath=".status.conditions[?(@.type=='RevisionHealthy')].status"
 // +kubebuilder:printcolumn:name="IMAGE",type="string",JSONPath=".spec.image"
 // +kubebuilder:printcolumn:name="STATE",type="string",JSONPath=".spec.desiredState"
-// +kubebuilder:printcolumn:name="DEP-FOUND",type="string",JSONPath=".status.foundDependencies"
-// +kubebuilder:printcolumn:name="DEP-INSTALLED",type="string",JSONPath=".status.installedDependencies"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="REVISION",type="string",JSONPath=".spec.revision",priority=1
+// +kubebuilder:printcolumn:name="DEP-FOUND",type="string",JSONPath=".status.foundDependencies",priority=1
+// +kubebuilder:printcolumn:name="DEP-INSTALLED",type="string",JSONPath=".status.installedDependencies",priority=1
 // +kubebuilder:resource:scope=Cluster,categories={crossplane,pkgrev}
 type ConfigurationRevision struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -101,5 +102,6 @@ type ConfigurationRevision struct {
 type ConfigurationRevisionList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ConfigurationRevision `json:"items"`
+
+	Items []ConfigurationRevision `json:"items"`
 }

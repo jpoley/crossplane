@@ -29,6 +29,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/spf13/afero"
 	corev1 "k8s.io/api/core/v1"
+	kmeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	kcache "k8s.io/client-go/tools/cache"
@@ -38,30 +39,36 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	"github.com/crossplane/crossplane-runtime/pkg/certificates"
-	"github.com/crossplane/crossplane-runtime/pkg/controller"
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/feature"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/certificates"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/controller"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/feature"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured"
 
-	"github.com/crossplane/crossplane/internal/controller/apiextensions"
-	apiextensionscontroller "github.com/crossplane/crossplane/internal/controller/apiextensions/controller"
-	"github.com/crossplane/crossplane/internal/controller/pkg"
-	pkgcontroller "github.com/crossplane/crossplane/internal/controller/pkg/controller"
-	"github.com/crossplane/crossplane/internal/engine"
-	"github.com/crossplane/crossplane/internal/features"
-	"github.com/crossplane/crossplane/internal/initializer"
-	"github.com/crossplane/crossplane/internal/metrics"
-	"github.com/crossplane/crossplane/internal/transport"
-	"github.com/crossplane/crossplane/internal/usage"
-	"github.com/crossplane/crossplane/internal/validation/apiextensions/v1/composition"
-	"github.com/crossplane/crossplane/internal/validation/apiextensions/v1/xrd"
-	"github.com/crossplane/crossplane/internal/xfn"
-	"github.com/crossplane/crossplane/internal/xpkg"
+	pkgv1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	"github.com/crossplane/crossplane/v2/internal/circuit"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions"
+	apiextensionscontroller "github.com/crossplane/crossplane/v2/internal/controller/apiextensions/controller"
+	"github.com/crossplane/crossplane/v2/internal/controller/ops"
+	opscontroller "github.com/crossplane/crossplane/v2/internal/controller/ops/controller"
+	"github.com/crossplane/crossplane/v2/internal/controller/pkg"
+	pkgcontroller "github.com/crossplane/crossplane/v2/internal/controller/pkg/controller"
+	"github.com/crossplane/crossplane/v2/internal/controller/protection"
+	"github.com/crossplane/crossplane/v2/internal/engine"
+	"github.com/crossplane/crossplane/v2/internal/features"
+	"github.com/crossplane/crossplane/v2/internal/initializer"
+	"github.com/crossplane/crossplane/v2/internal/metrics"
+	"github.com/crossplane/crossplane/v2/internal/protection/usage"
+	"github.com/crossplane/crossplane/v2/internal/transport"
+	usagehook "github.com/crossplane/crossplane/v2/internal/webhook/protection/usage"
+	"github.com/crossplane/crossplane/v2/internal/xfn"
+	"github.com/crossplane/crossplane/v2/internal/xfn/cached"
+	"github.com/crossplane/crossplane/v2/internal/xpkg"
 )
 
 // Command runs the core crossplane controllers.
@@ -73,7 +80,6 @@ type Command struct {
 // KongVars represent the kong variables associated with the CLI parser
 // required for the Registry default variable interpolation.
 var KongVars = kong.Vars{ //nolint:gochecknoglobals // We treat these as constants.
-	"default_registry":   xpkg.DefaultRegistry,
 	"default_user_agent": transport.DefaultUserAgent(),
 }
 
@@ -87,55 +93,78 @@ func (c *Command) Run() error {
 type startCommand struct {
 	Profile string `help:"Serve runtime profiling data via HTTP at /debug/pprof." placeholder:"host:port"`
 
-	Namespace      string `default:"crossplane-system"     env:"POD_NAMESPACE"                                                      help:"Namespace used to unpack and run packages."                         short:"n"`
+	Namespace      string `default:"crossplane-system"     env:"POD_NAMESPACE"                                                      help:"Namespace used to unpack and run packages."                      short:"n"`
 	ServiceAccount string `default:"crossplane"            env:"POD_SERVICE_ACCOUNT"                                                help:"Name of the Crossplane Service Account."`
-	CacheDir       string `default:"/cache"                env:"CACHE_DIR"                                                          help:"Directory used for caching package images."                         short:"c"`
-	LeaderElection bool   `default:"false"                 env:"LEADER_ELECTION"                                                    help:"Use leader election for the controller manager."                    short:"l"`
-	Registry       string `default:"${default_registry}"   env:"REGISTRY"                                                           help:"Default registry used to fetch packages when not specified in tag." short:"r"`
+	LeaderElection bool   `default:"false"                 env:"LEADER_ELECTION"                                                    help:"Use leader election for the controller manager."                 short:"l"`
 	CABundlePath   string `env:"CA_BUNDLE_PATH"            help:"Additional CA bundle to use when fetching packages from registry."`
 	UserAgent      string `default:"${default_user_agent}" env:"USER_AGENT"                                                         help:"The User-Agent header that will be set on all package requests."`
 
-	PackageRuntime string `default:"Deployment" env:"PACKAGE_RUNTIME" help:"The package runtime to use for packages with a runtime (e.g. Providers and Functions)"`
+	XpkgCacheDir string `aliases:"cache-dir" default:"/cache/xpkg" env:"XPKG_CACHE_DIR,CACHE_DIR" help:"Directory used for caching package images." short:"c"`
 
-	SyncInterval                     time.Duration `default:"1h"  help:"How often all resources will be double-checked for drift from the desired state."                      short:"s"`
-	PollInterval                     time.Duration `default:"1m"  help:"How often individual resources will be checked for drift from the desired state."`
-	MaxReconcileRate                 int           `default:"100" help:"The global maximum rate per second at which resources may checked for drift from the desired state."`
-	MaxConcurrentPackageEstablishers int           `default:"10"  help:"The the maximum number of goroutines to use for establishing Providers, Configurations and Functions."`
+	PackageRuntime string `default:"Deployment" env:"PACKAGE_RUNTIME" help:"The package runtime to use for packages with a runtime (e.g. Providers and Functions)" placeholder:"runtime | runtime1=package1;runtime2=package2"`
 
-	WebhookEnabled bool `default:"true" env:"WEBHOOK_ENABLED" help:"Enable webhook configuration."`
+	SyncInterval                     time.Duration `default:"1h"                 help:"How often all resources will be double-checked for drift from the desired state."                  short:"s"`
+	PollInterval                     time.Duration `default:"1m"                 help:"How often individual resources will be checked for drift from the desired state."`
+	MaxConcurrentReconciles          int           `aliases:"max-reconcile-rate" default:"100"                                                                                            help:"The maximum number of concurrent reconcile operations (worker pool size)."`
+	MaxConcurrentPackageEstablishers int           `default:"10"                 help:"The maximum number of goroutines to use for establishing Providers, Configurations and Functions."`
+
+	CircuitBreakerBurst      float64       `default:"100.0" help:"XR circuit breaker token bucket capacity."`
+	CircuitBreakerRefillRate float64       `default:"1.0"   help:"XR circuit breaker token refill rate (tokens/second)."`
+	CircuitBreakerCooldown   time.Duration `default:"5m"    help:"How long XR circuit breakers stay open after triggering."`
+
+	EnableWebhooks bool `aliases:"webhook-enabled" default:"true" env:"ENABLE_WEBHOOKS,WEBHOOK_ENABLED" help:"Enable webhook configuration."`
+
+	WebhookPort     int `default:"9443" env:"WEBHOOK_PORT"      help:"The port the webhook server listens on."`
+	MetricsPort     int `default:"8080" env:"METRICS_PORT"      help:"The port the metrics server listens on."`
+	HealthProbePort int `default:"8081" env:"HEALTH_PROBE_PORT" help:"The port the health probe endpoint listens on."`
 
 	TLSServerSecretName string `env:"TLS_SERVER_SECRET_NAME" help:"The name of the TLS Secret that will store Crossplane's server certificate."`
 	TLSServerCertsDir   string `env:"TLS_SERVER_CERTS_DIR"   help:"The path of the folder which will store TLS server certificate of Crossplane."`
 	TLSClientSecretName string `env:"TLS_CLIENT_SECRET_NAME" help:"The name of the TLS Secret that will be store Crossplane's client certificate."`
 	TLSClientCertsDir   string `env:"TLS_CLIENT_CERTS_DIR"   help:"The path of the folder which will store TLS client certificate of Crossplane."`
 
-	EnableExternalSecretStores      bool `group:"Alpha Features:" help:"Enable support for External Secret Stores."`
-	EnableUsages                    bool `group:"Alpha Features:" help:"Enable support for deletion ordering and resource protection with Usages."`
-	EnableRealtimeCompositions      bool `group:"Alpha Features:" help:"Enable support for realtime compositions, i.e. watching composed resources and reconciling compositions immediately when any of the composed resources is updated."`
-	EnableSSAClaims                 bool `group:"Alpha Features:" help:"Enable support for using Kubernetes server-side apply to sync claims with composite resources (XRs)."`
-	EnableDependencyVersionUpgrades bool `group:"Alpha Features:" help:"Enable support for upgrading dependency versions when the parent package is updated."`
-	EnableSignatureVerification     bool `group:"Alpha Features:" help:"Enable support for package signature verification via ImageConfig API."`
+	EnableDependencyVersionUpgrades   bool `group:"Alpha Features:" help:"Enable support for upgrading dependency versions when the parent package is updated."`
+	EnableDependencyVersionDowngrades bool `group:"Alpha Features:" help:"Enable support for upgrading and downgrading dependency versions when a dependent package is updated."`
+	EnableSignatureVerification       bool `group:"Alpha Features:" help:"Enable support for package signature verification via ImageConfig API."`
+	EnableFunctionResponseCache       bool `group:"Alpha Features:" help:"Enable support for caching composition function responses."`
+	EnableOperations                  bool `group:"Alpha Features:" help:"Enable support for Operations."`
 
-	EnableCompositionWebhookSchemaValidation bool `default:"true" group:"Beta Features:" help:"Enable support for Composition validation using schemas."`
-	EnableDeploymentRuntimeConfigs           bool `default:"true" group:"Beta Features:" help:"Enable support for Deployment Runtime Configs."`
+	XfnCacheDir    string        `default:"/cache/xfn" env:"XFN_CACHE_DIR"     group:"Alpha Features:" help:"Directory used for caching function responses. Requires --enable-function-response-cache."`
+	XfnCacheMaxTTL time.Duration `default:"24h"        env:"XFN_CACHE_MAX_TTL" group:"Alpha Features:" help:"Maximum TTL for cached function responses. Set to 0 to disable. Requires --enable-function-response-cache."`
 
-	// These are GA features that previously had alpha or beta feature flags.
-	// You can't turn off a GA feature. We maintain the flags to avoid breaking
-	// folks who are passing them, but they do nothing. The flags are hidden so
-	// they don't show up in the help output.
-	EnableCompositionRevisions               bool `default:"true" hidden:""`
-	EnableCompositionFunctions               bool `default:"true" hidden:""`
-	EnableCompositionFunctionsExtraResources bool `default:"true" hidden:""`
+	EnableDeploymentRuntimeConfigs          bool `default:"true" group:"Beta Features:" help:"Enable support for Deployment Runtime Configs."`
+	EnableUsages                            bool `default:"true" group:"Beta Features:" help:"Enable support for deletion ordering and resource protection with Usages."`
+	EnableSSAClaims                         bool `default:"true" group:"Beta Features:" help:"Enable support for using Kubernetes server-side apply to sync claims with composite resources (XRs)."`
+	EnableRealtimeCompositions              bool `default:"true" group:"Beta Features:" help:"Enable support for realtime compositions, i.e. watching composed resources and reconciling compositions immediately when any of the composed resources is updated."`
+	EnableCustomToManagedResourceConversion bool `default:"true" group:"Beta Features:" help:"Enable support CRD to MRD conversion when installing a package."`
 
-	// These are alpha features that we've removed support for. Crossplane
-	// returns an error when you enable them. This ensures you'll see an
-	// explicit and informative error on startup, instead of a potentially
-	// surprising one later.
-	EnableEnvironmentConfigs bool `hidden:""`
+	RestrictNamespacedEvents bool `default:"false" help:"Prevent events from being produced on resources that are not namespaced. Useful when crossplane does not have permissions in the default namespace."`
+
+	// These are features that we've removed support for. Crossplane returns an
+	// error when you enable them. This ensures you'll see an explicit and
+	// informative error on startup, instead of a potentially surprising one
+	// later.
+	EnableCompositionWebhookSchemaValidation bool   `hidden:""`
+	EnableExternalSecretStores               bool   `hidden:""`
+	Registry                                 string `hidden:""`
 }
 
 // Run core Crossplane controllers.
 func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //nolint:gocognit // Only slightly over.
+	if c.EnableCompositionWebhookSchemaValidation {
+		//nolint:revive // This is long and easier to read with punctuation.
+		return errors.New("Crossplane now uses CEL to validate Compositions. The --enable-composition-webhook-schema-validation flag will be removed in a future release.")
+	}
+
+	if c.EnableExternalSecretStores {
+		//nolint:revive // This is long and easier to read with punctuation.
+		return errors.New("Crossplane removed support for external secret stores. The --enable-external-secret-stores flag will be removed in a future release.")
+	}
+
+	if c.Registry != "" {
+		return errors.New("the --registry flag is no longer supported since support for a default registry value has been removed. Please ensure that all packages have fully qualified names that explicitly state their registry. This also applies to all of a packages dependencies")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -152,7 +181,8 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 	// The claim and XR controllers don't use the manager's cache or client.
 	// They use their own. They're setup later in this method.
 	eb := record.NewBroadcaster()
-	mgr, err := ctrl.NewManager(ratelimiter.LimitRESTConfig(cfg, c.MaxReconcileRate), ctrl.Options{
+
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: s,
 		Cache: cache.Options{
 			SyncPeriod: &c.SyncInterval,
@@ -164,6 +194,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 					t.MinVersion = tls.VersionTLS13
 				},
 			},
+			Port: c.WebhookPort,
 		}),
 		Client: client.Options{
 			Cache: &client.CacheOptions{
@@ -171,7 +202,12 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 				Unstructured: false, // this is the default to not cache unstructured objects
 			},
 		},
+
 		EventBroadcaster: eb,
+
+		Metrics: metricsserver.Options{
+			BindAddress: fmt.Sprintf(":%d", c.MetricsPort),
+		},
 
 		// controller-runtime uses both ConfigMaps and Leases for leader
 		// election by default. Leases expire after 15 seconds, with a
@@ -188,7 +224,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		RenewDeadline:                 func() *time.Duration { d := 50 * time.Second; return &d }(),
 
 		PprofBindAddress:       c.Profile,
-		HealthProbeBindAddress: ":8081",
+		HealthProbeBindAddress: fmt.Sprintf(":%d", c.HealthProbePort),
 	})
 	if err != nil {
 		return errors.Wrap(err, "cannot create manager")
@@ -199,28 +235,22 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 	})
 	defer eb.Shutdown()
 
+	eventFilterFns := []event.FilterFn{}
+	// If the option to restrict event emission to namespaced resources if active,
+	// we create a filter function accordingly
+	if c.RestrictNamespacedEvents {
+		eventFilterFns = append(eventFilterFns, func(obj runtime.Object, _ event.Event) bool {
+			m, err := kmeta.Accessor(obj)
+			return (err == nil && m.GetNamespace() != "" && m.GetNamespace() != "default")
+		})
+	}
+
 	o := controller.Options{
 		Logger:                  log,
-		MaxConcurrentReconciles: c.MaxReconcileRate,
+		MaxConcurrentReconciles: c.MaxConcurrentReconciles,
 		PollInterval:            c.PollInterval,
-		GlobalRateLimiter:       ratelimiter.NewGlobal(c.MaxReconcileRate),
 		Features:                &feature.Flags{},
-	}
-
-	if !c.EnableCompositionRevisions {
-		log.Info("Composition Revisions are GA and cannot be disabled. The --enable-composition-revisions flag will be removed in a future release.")
-	}
-	if !c.EnableCompositionFunctions {
-		log.Info("Composition Functions are GA and cannot be disabled. The --enable-composition-functions flag will be removed in a future release.")
-	}
-	if !c.EnableCompositionFunctionsExtraResources {
-		log.Info("Extra Resources are GA and cannot be disabled. The --enable-composition-functions-extra-resources flag will be removed in a future release.")
-	}
-
-	// TODO(negz): Include a link to a migration guide.
-	if c.EnableEnvironmentConfigs {
-		//nolint:revive // This is long. It's easier to read with punctuation.
-		return errors.New("Crossplane no longer supports loading and patching EnvironmentConfigs natively. Please use function-environment-configs instead. The --enable-environment-configs flag will be removed in a future release.")
+		EventFilterFunctions:    eventFilterFns,
 	}
 
 	clienttls, err := certificates.LoadMTLSConfig(
@@ -232,63 +262,84 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		return errors.Wrap(err, "cannot load client TLS certificates")
 	}
 
-	m := xfn.NewMetrics()
-	metrics.Registry.MustRegister(m)
+	pfrm := xfn.NewPrometheusMetrics()
+	metrics.Registry.MustRegister(pfrm)
 
 	// We want all XR controllers to share the same gRPC clients.
-	functionRunner := xfn.NewPackagedFunctionRunner(mgr.GetClient(),
+	pfr := xfn.NewPackagedFunctionRunner(mgr.GetClient(),
 		xfn.WithLogger(log),
 		xfn.WithTLSConfig(clienttls),
-		xfn.WithInterceptorCreators(m),
+		xfn.WithInterceptorCreators(pfrm),
 	)
 
 	// Periodically remove clients for Functions that no longer exist.
-	go functionRunner.GarbageCollectConnections(ctx, 10*time.Minute)
+	go pfr.GarbageCollectConnections(ctx, 10*time.Minute)
 
-	if c.EnableCompositionWebhookSchemaValidation {
-		o.Features.Enable(features.EnableBetaCompositionWebhookSchemaValidation)
-		log.Info("Beta feature enabled", "flag", features.EnableBetaCompositionWebhookSchemaValidation)
+	var runner xfn.FunctionRunner = pfr
+
+	if c.EnableFunctionResponseCache {
+		o.Features.Enable(features.EnableAlphaFunctionResponseCache)
+		log.Info("Alpha feature enabled", "flag", features.EnableAlphaFunctionResponseCache)
+
+		cfrm := cached.NewPrometheusMetrics()
+		metrics.Registry.MustRegister(cfrm)
+
+		// Wrap the packaged function runner with a caching one.
+		cfr := cached.NewFileBackedRunner(pfr, c.XfnCacheDir,
+			cached.WithLogger(log),
+			cached.WithMaxTTL(c.XfnCacheMaxTTL),
+			cached.WithMetrics(cfrm),
+		)
+
+		// Periodically delete expired cache entries.
+		go cfr.GarbageCollectFiles(ctx, 1*time.Minute)
+
+		runner = cfr
 	}
+
 	if c.EnableUsages {
-		o.Features.Enable(features.EnableAlphaUsages)
-		log.Info("Alpha feature enabled", "flag", features.EnableAlphaUsages)
+		o.Features.Enable(features.EnableBetaUsages)
+		log.Info("Beta feature enabled", "flag", features.EnableBetaUsages)
 	}
-	if c.EnableExternalSecretStores {
-		o.Features.Enable(features.EnableAlphaExternalSecretStores)
-		log.Info("Alpha feature enabled", "flag", features.EnableAlphaExternalSecretStores)
 
-		tcfg, err := certificates.LoadMTLSConfig(
-			filepath.Join(c.TLSClientCertsDir, initializer.SecretKeyCACert),
-			filepath.Join(c.TLSClientCertsDir, corev1.TLSCertKey),
-			filepath.Join(c.TLSClientCertsDir, corev1.TLSPrivateKeyKey),
-			false)
-		if err != nil {
-			return errors.Wrap(err, "cannot load TLS certificates for external secret stores")
-		}
-
-		o.ESSOptions = &controller.ESSOptions{
-			TLSConfig: tcfg,
-		}
-	}
 	if c.EnableRealtimeCompositions {
-		o.Features.Enable(features.EnableAlphaRealtimeCompositions)
-		log.Info("Alpha feature enabled", "flag", features.EnableAlphaRealtimeCompositions)
+		o.Features.Enable(features.EnableBetaRealtimeCompositions)
+		log.Info("Beta feature enabled", "flag", features.EnableBetaRealtimeCompositions)
 	}
+
+	if c.EnableCustomToManagedResourceConversion {
+		o.Features.Enable(features.EnableBetaCustomToManagedResourceConversion)
+		log.Info("Beta feature enabled", "flag", features.EnableBetaCustomToManagedResourceConversion)
+	}
+
 	if c.EnableDeploymentRuntimeConfigs {
 		o.Features.Enable(features.EnableBetaDeploymentRuntimeConfigs)
 		log.Info("Beta feature enabled", "flag", features.EnableBetaDeploymentRuntimeConfigs)
 	}
+
 	if c.EnableSSAClaims {
-		o.Features.Enable(features.EnableAlphaClaimSSA)
-		log.Info("Alpha feature enabled", "flag", features.EnableAlphaClaimSSA)
+		o.Features.Enable(features.EnableBetaClaimSSA)
+		log.Info("Beta feature enabled", "flag", features.EnableBetaClaimSSA)
 	}
-	if c.EnableDependencyVersionUpgrades {
+	// Enabling downgrades implicitly enables upgrades.
+	if c.EnableDependencyVersionUpgrades || c.EnableDependencyVersionDowngrades {
 		o.Features.Enable(features.EnableAlphaDependencyVersionUpgrades)
 		log.Info("Alpha feature enabled", "flag", features.EnableAlphaDependencyVersionUpgrades)
 	}
+
+	if c.EnableDependencyVersionDowngrades {
+		o.Features.Enable(features.EnableAlphaDependencyVersionDowngrades)
+		log.Info("Alpha feature enabled", "flag", features.EnableAlphaDependencyVersionDowngrades)
+	}
+
 	if c.EnableSignatureVerification {
 		o.Features.Enable(features.EnableAlphaSignatureVerification)
 		log.Info("Alpha feature enabled", "flag", features.EnableAlphaSignatureVerification)
+	}
+
+	if c.EnableOperations {
+		o.Features.Enable(features.EnableAlphaOperations)
+		log.Info("Alpha feature enabled", "flag", features.EnableAlphaOperations)
 	}
 
 	// Claim and XR controllers are started and stopped dynamically by the
@@ -307,7 +358,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		// only happen when realtime composition is enabled, and we should GC
 		// the informer within 60 seconds. This handler tries to make the error
 		// a little more informative, and less scary.
-		DefaultWatchErrorHandler: func(_ *kcache.Reflector, err error) {
+		DefaultWatchErrorHandler: func(_ context.Context, _ *kcache.Reflector, err error) {
 			if errors.Is(io.EOF, err) {
 				// Watch closed normally.
 				return
@@ -330,7 +381,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		log.Info("API extensions cache stopped")
 	}()
 
-	cl, err := client.New(mgr.GetConfig(), client.Options{
+	cached, err := client.New(mgr.GetConfig(), client.Options{
 		HTTPClient: mgr.GetHTTPClient(),
 		Scheme:     mgr.GetScheme(),
 		Mapper:     mgr.GetRESTMapper(),
@@ -348,14 +399,32 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		return errors.Wrap(err, "cannot create client for API extension controllers")
 	}
 
+	// Create a separate no-cache client for use when the composite controller does not find an Unstructured
+	// resource that it expects to find in the cache.
+	uncached, err := client.New(mgr.GetConfig(), client.Options{
+		HTTPClient: mgr.GetHTTPClient(),
+		Scheme:     mgr.GetScheme(),
+		Mapper:     mgr.GetRESTMapper(),
+	})
+	if err != nil {
+		return errors.Wrap(err, "cannot create uncached client for API extension controllers")
+	}
+
+	cem := engine.NewPrometheusMetrics()
+	metrics.Registry.MustRegister(cem)
+
 	// It's important the engine's client is wrapped with unstructured.NewClient
 	// because controller-runtime always caches *unstructured.Unstructured, not
 	// our wrapper types like *composite.Unstructured. This client takes care of
 	// automatically wrapping and unwrapping *unstructured.Unstructured.
 	ce := engine.New(mgr,
 		engine.TrackInformers(ca, mgr.GetScheme()),
-		unstructured.NewClient(cl),
+		unstructured.NewClient(cached),
+		unstructured.NewClient(uncached),
 		engine.WithLogger(log),
+		engine.WithMetrics(cem),
+		engine.WithNamespace(c.Namespace),
+		engine.WithServiceAccount(c.ServiceAccount),
 	)
 
 	// TODO(negz): Garbage collect informers for CRs that are still defined
@@ -370,33 +439,63 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		return errors.Wrap(err, "cannot start garbage collector for custom resource informers")
 	}
 
+	// Automatically fetch required resources.
+	runner = xfn.NewFetchingFunctionRunner(runner, xfn.NewExistingRequiredResourcesFetcher(cached))
+
+	cbm := circuit.NewPrometheusMetrics()
+	metrics.Registry.MustRegister(cbm)
+
 	ao := apiextensionscontroller.Options{
-		Options:          o,
-		ControllerEngine: ce,
-		FunctionRunner:   functionRunner,
+		Options:                  o,
+		ControllerEngine:         ce,
+		FunctionRunner:           runner,
+		CircuitBreakerMetrics:    cbm,
+		CircuitBreakerBurst:      c.CircuitBreakerBurst,
+		CircuitBreakerRefillRate: c.CircuitBreakerRefillRate,
+		CircuitBreakerCooldown:   c.CircuitBreakerCooldown,
 	}
 
 	if err := apiextensions.Setup(mgr, ao); err != nil {
 		return errors.Wrap(err, "cannot setup API extension controllers")
 	}
 
-	var pr pkgcontroller.PackageRuntime
-	switch c.PackageRuntime {
-	case string(pkgcontroller.PackageRuntimeDeployment):
-		pr = pkgcontroller.PackageRuntimeDeployment
-	case string(pkgcontroller.PackageRuntimeExternal):
-		pr = pkgcontroller.PackageRuntimeExternal
-	default:
-		return errors.Errorf("unsupported package runtime %q, supported runtimes are %q and %q",
-			c.PackageRuntime, pkgcontroller.PackageRuntimeDeployment, pkgcontroller.PackageRuntimeExternal)
+	if o.Features.Enabled(features.EnableAlphaOperations) {
+		oo := opscontroller.Options{
+			Options:          o,
+			FunctionRunner:   runner,
+			ControllerEngine: ce,
+		}
+		if err := ops.Setup(mgr, oo); err != nil {
+			return errors.Wrap(err, "cannot setup ops controllers")
+		}
 	}
+
+	var pr pkgcontroller.ActiveRuntime
+	switch rt := pkgcontroller.PackageRuntime(c.PackageRuntime); rt {
+	case pkgcontroller.PackageRuntimeUnspecified:
+		rt = pkgcontroller.PackageRuntimeDeployment
+		fallthrough
+	case pkgcontroller.PackageRuntimeDeployment, pkgcontroller.PackageRuntimeExternal:
+		pr = pkgcontroller.NewActiveRuntime(
+			pkgcontroller.WithDefaultPackageRuntime(rt),
+		)
+	default:
+		pr, err = pkgcontroller.ParsePackageRuntime(string(rt))
+		if err != nil {
+			return errors.Errorf("unsupported package runtime %q, supported runtimes are [%q, %q]",
+				c.PackageRuntime, pkgcontroller.PackageRuntimeDeployment,
+				pkgcontroller.PackageRuntimeExternal)
+		}
+	}
+
+	log.Info("Package Runtime for Provider: " + string(pr.For(pkgv1.ProviderKind)))
+	log.Info("Package Runtime for Function: " + string(pr.For(pkgv1.FunctionKind)))
 
 	po := pkgcontroller.Options{
 		Options:                          o,
-		Cache:                            xpkg.NewFsPackageCache(c.CacheDir, afero.NewOsFs()),
+		Cache:                            xpkg.NewFsPackageCache(c.XpkgCacheDir, afero.NewOsFs()),
 		Namespace:                        c.Namespace,
 		ServiceAccount:                   c.ServiceAccount,
-		DefaultRegistry:                  c.Registry,
 		FetcherOptions:                   []xpkg.FetcherOpt{xpkg.WithUserAgent(c.UserAgent)},
 		PackageRuntime:                   pr,
 		MaxConcurrentPackageEstablishers: c.MaxConcurrentPackageEstablishers,
@@ -410,7 +509,7 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 	// ".sigstore/root" is coming from: https://github.com/sigstore/sigstore/blob/ecaaf75cf3a942cf224533ae15aee6eec19dc1e2/pkg/tuf/client.go#L558
 	// Check the following to read more about what TUF is and why it exists
 	// in this context: https://blog.sigstore.dev/the-update-framework-and-you-2f5cbaa964d5/
-	if err = os.Setenv("TUF_ROOT", filepath.Join(c.CacheDir, ".sigstore", "root")); err != nil {
+	if err = os.Setenv("TUF_ROOT", filepath.Join(c.XpkgCacheDir, ".sigstore", "root")); err != nil {
 		return errors.Wrap(err, "cannot set TUF_ROOT environment variable")
 	}
 
@@ -419,30 +518,27 @@ func (c *startCommand) Run(s *runtime.Scheme, log logging.Logger) error { //noli
 		if err != nil {
 			return errors.Wrap(err, "cannot parse CA bundle")
 		}
+
 		po.FetcherOptions = append(po.FetcherOptions, xpkg.WithCustomCA(rootCAs))
 	}
 
 	if err := pkg.Setup(mgr, po); err != nil {
-		return errors.Wrap(err, "cannot add packages controllers to manager")
+		return errors.Wrap(err, "cannot add package manager controllers to manager")
 	}
 
 	// Registering webhooks with the manager is what actually starts the webhook
 	// server.
-	if c.WebhookEnabled {
-		// TODO(muvaf): Once the implementation of other webhook handlers are
-		// fleshed out, implement a registration pattern similar to scheme
-		// registrations.
-		if err := xrd.SetupWebhookWithManager(mgr, o); err != nil {
-			return errors.Wrap(err, "cannot setup webhook for compositeresourcedefinitions")
+	if c.EnableWebhooks && o.Features.Enabled(features.EnableBetaUsages) {
+		f, err := usage.NewFinder(mgr.GetClient(), mgr.GetFieldIndexer())
+		if err != nil {
+			return errors.Wrap(err, "cannot setup usage finder")
 		}
-		if err := composition.SetupWebhookWithManager(mgr, o); err != nil {
-			return errors.Wrap(err, "cannot setup webhook for compositions")
+
+		if err := protection.Setup(mgr, f, o); err != nil {
+			return errors.Wrap(err, "cannot add protection (usage) controllers to manager")
 		}
-		if o.Features.Enabled(features.EnableAlphaUsages) {
-			if err := usage.SetupWebhookWithManager(mgr, o); err != nil {
-				return errors.Wrap(err, "cannot setup webhook for usages")
-			}
-		}
+
+		usagehook.SetupWebhookWithManager(mgr, f, o)
 	}
 
 	if err := c.SetupProbes(mgr); err != nil {
@@ -465,14 +561,16 @@ func (c *startCommand) SetupProbes(mgr ctrl.Manager) error {
 	}
 
 	// Add probes waiting for the webhook server if webhooks are enabled
-	if c.WebhookEnabled {
+	if c.EnableWebhooks {
 		hookServer := mgr.GetWebhookServer()
 		if err := mgr.AddReadyzCheck("webhook", hookServer.StartedChecker()); err != nil {
 			return errors.Wrap(err, "cannot create webhook ready check")
 		}
+
 		if err := mgr.AddHealthzCheck("webhook", hookServer.StartedChecker()); err != nil {
 			return errors.Wrap(err, "cannot create webhook health check")
 		}
 	}
+
 	return nil
 }

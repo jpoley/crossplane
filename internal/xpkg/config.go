@@ -6,9 +6,9 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 
-	"github.com/crossplane/crossplane/apis/pkg/v1beta1"
+	"github.com/crossplane/crossplane/v2/apis/pkg/v1beta1"
 )
 
 const (
@@ -23,6 +23,9 @@ type ConfigStore interface {
 	PullSecretFor(ctx context.Context, image string) (imageConfig, pullSecret string, err error)
 	// ImageVerificationConfigFor returns the ImageConfig for a given image.
 	ImageVerificationConfigFor(ctx context.Context, image string) (imageConfig string, iv *v1beta1.ImageVerification, err error)
+	// RewritePath returns the name of the selected image config and the
+	// rewritten path of the given image based on that config.
+	RewritePath(ctx context.Context, image string) (imageConfig, newPath string, err error)
 }
 
 // isValidConfig is a function that determines if an ImageConfig is valid while
@@ -94,6 +97,44 @@ func (s *ImageConfigStore) ImageVerificationConfigFor(ctx context.Context, image
 	return config.Name, config.Spec.Verification, nil
 }
 
+// RewritePath returns the name of the selected image config and the rewritten
+// path of the given image based on that config.
+func (s *ImageConfigStore) RewritePath(ctx context.Context, image string) (imageConfig, newPath string, err error) {
+	config, err := s.bestMatch(ctx, image, func(c *v1beta1.ImageConfig) bool {
+		return c.Spec.RewriteImage != nil
+	})
+	if err != nil {
+		return "", "", errors.Wrap(err, errFindBestMatch)
+	}
+
+	if config == nil {
+		// No ImageConfig with a rewrite found for this image, this is not an
+		// error.
+		return "", "", nil
+	}
+
+	rewritePrefix := config.Spec.RewriteImage.Prefix
+	if rewritePrefix == "" {
+		return config.Name, "", errors.New("rewrite prefix is missing")
+	}
+
+	// Find the longest prefix match in the selected image config; this is what
+	// we'll replace.
+	matchPrefix := ""
+
+	for _, m := range config.Spec.MatchImages {
+		if !strings.HasPrefix(image, m.Prefix) {
+			continue
+		}
+
+		if len(m.Prefix) > len(matchPrefix) {
+			matchPrefix = m.Prefix
+		}
+	}
+
+	return config.Name, rewritePrefix + strings.TrimPrefix(image, matchPrefix), nil
+}
+
 // bestMatch finds the best matching ImageConfig for an image based on the
 // longest prefix match.
 func (s *ImageConfigStore) bestMatch(ctx context.Context, image string, valid isValidConfig) (*v1beta1.ImageConfig, error) {
@@ -103,8 +144,10 @@ func (s *ImageConfigStore) bestMatch(ctx context.Context, image string, valid is
 		return nil, errors.Wrap(err, errListImageConfigs)
 	}
 
-	var config *v1beta1.ImageConfig
-	var longest int
+	var (
+		config  *v1beta1.ImageConfig
+		longest int
+	)
 
 	for _, c := range l.Items {
 		if !valid(&c) {

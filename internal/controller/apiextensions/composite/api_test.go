@@ -27,16 +27,16 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/event"
-	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/fake"
-	"github.com/crossplane/crossplane-runtime/pkg/test"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/fake"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
-	v1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
-	"github.com/crossplane/crossplane/internal/xcrd"
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	"github.com/crossplane/crossplane/v2/internal/xcrd"
 )
 
 func TestPublishConnection(t *testing.T) {
@@ -55,6 +55,7 @@ func TestPublishConnection(t *testing.T) {
 		filter     []string
 		c          managed.ConnectionDetails
 	}
+
 	type want struct {
 		published bool
 		err       error
@@ -139,10 +140,12 @@ func TestPublishConnection(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			a := &APIFilteredSecretPublisher{tc.args.applicator, tc.args.filter}
+
 			got, err := a.PublishConnection(context.Background(), tc.args.o, tc.args.c)
 			if diff := cmp.Diff(tc.want.published, got); diff != "" {
 				t.Errorf("\n%s\nPublish(...): -want, +got:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nPublish(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
@@ -206,6 +209,7 @@ func TestFetchRevision(t *testing.T) {
 		ctx context.Context
 		cr  resource.Composite
 	}
+
 	type want struct {
 		rev *v1.CompositionRevision
 		err error
@@ -213,15 +217,15 @@ func TestFetchRevision(t *testing.T) {
 
 	cases := map[string]struct {
 		reason string
-		client resource.ClientApplicator
+		client client.Client
 		args   args
 		want   want
 	}{
 		"GetCompositionRevisionError": {
 			reason: "We should wrap and return errors encountered getting the CompositionRevision.",
-			client: resource.ClientApplicator{Client: &test.MockClient{
+			client: &test.MockClient{
 				MockGet: test.NewMockGetFn(errBoom),
-			}},
+			},
 			args: args{
 				cr: &fake.Composite{
 					CompositionRevisionReferencer: fake.CompositionRevisionReferencer{Ref: &corev1.LocalObjectReference{}},
@@ -235,12 +239,12 @@ func TestFetchRevision(t *testing.T) {
 		},
 		"UpdateManual": {
 			reason: "When we're using the manual update policy and a revision reference is set we should return that revision as a composition.",
-			client: resource.ClientApplicator{Client: &test.MockClient{
+			client: &test.MockClient{
 				MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
 					*obj.(*v1.CompositionRevision) = *rev3
 					return nil
 				}),
-			}},
+			},
 			args: args{
 				cr: &fake.Composite{
 					CompositionRevisionReferencer: fake.CompositionRevisionReferencer{Ref: &corev1.LocalObjectReference{}},
@@ -253,9 +257,9 @@ func TestFetchRevision(t *testing.T) {
 		},
 		"GetCompositionError": {
 			reason: "We should wrap and return errors encountered getting the Composition.",
-			client: resource.ClientApplicator{Client: &test.MockClient{
+			client: &test.MockClient{
 				MockGet: test.NewMockGetFn(errBoom),
-			}},
+			},
 			args: args{
 				cr: &fake.Composite{
 					CompositionReferencer: fake.CompositionReferencer{Ref: &corev1.ObjectReference{}},
@@ -267,10 +271,10 @@ func TestFetchRevision(t *testing.T) {
 		},
 		"ListCompositionRevisionsError": {
 			reason: "We should wrap and return errors encountered listing CompositionRevisions.",
-			client: resource.ClientApplicator{Client: &test.MockClient{
+			client: &test.MockClient{
 				MockGet:  test.NewMockGetFn(nil),
 				MockList: test.NewMockListFn(errBoom),
-			}},
+			},
 			args: args{
 				cr: &fake.Composite{
 					CompositionReferencer: fake.CompositionReferencer{Ref: &corev1.ObjectReference{}},
@@ -282,10 +286,10 @@ func TestFetchRevision(t *testing.T) {
 		},
 		"NoCompositionRevisionsError": {
 			reason: "We should return an error if we don't find any suitable CompositionRevisions.",
-			client: resource.ClientApplicator{Client: &test.MockClient{
+			client: &test.MockClient{
 				MockGet:  test.NewMockGetFn(nil),
 				MockList: test.NewMockListFn(nil),
-			}},
+			},
 			args: args{
 				cr: &fake.Composite{
 					CompositionReferencer: fake.CompositionReferencer{Ref: &corev1.ObjectReference{}},
@@ -297,33 +301,31 @@ func TestFetchRevision(t *testing.T) {
 		},
 		"AlreadyAtLatestRevision": {
 			reason: "We should return the latest revision without updating our reference if we already reference it.",
-			client: resource.ClientApplicator{
-				Client: &test.MockClient{
-					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
-						*obj.(*v1.Composition) = *comp
-						return nil
-					}),
-					MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
-						*obj.(*v1.CompositionRevisionList) = v1.CompositionRevisionList{
-							Items: []v1.CompositionRevision{
-								// We should ignore this revision because it does not have
-								// our composition above as its controller reference.
-								*rev3,
+			client: &test.MockClient{
+				MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+					*obj.(*v1.Composition) = *comp
+					return nil
+				}),
+				MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
+					*obj.(*v1.CompositionRevisionList) = v1.CompositionRevisionList{
+						Items: []v1.CompositionRevision{
+							// We should ignore this revision because it does not have
+							// our composition above as its controller reference.
+							*rev3,
 
-								// This revision is owned by our composition, and is the
-								// latest revision.
-								*rev2,
+							// This revision is owned by our composition, and is the
+							// latest revision.
+							*rev2,
 
-								// This revision is owned by our composition, but is not the
-								// latest revision.
-								*rev1,
-							},
-						}
-						return nil
-					}),
-				},
+							// This revision is owned by our composition, but is not the
+							// latest revision.
+							*rev1,
+						},
+					}
+					return nil
+				}),
 				// This should not be called.
-				Applicator: resource.ApplyFn(func(_ context.Context, _ client.Object, _ ...resource.ApplyOption) error { return errBoom }),
+				MockUpdate: test.NewMockUpdateFn(errBoom),
 			},
 			args: args{
 				cr: &fake.Composite{
@@ -342,25 +344,22 @@ func TestFetchRevision(t *testing.T) {
 		},
 		"NoRevisionSet": {
 			reason: "We should return the latest revision and update our reference if none is set.",
-			client: resource.ClientApplicator{
-				Client: &test.MockClient{
-					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
-						*obj.(*v1.Composition) = *comp
-						return nil
-					}),
-					MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
-						*obj.(*v1.CompositionRevisionList) = v1.CompositionRevisionList{
-							Items: []v1.CompositionRevision{
-								// This revision is owned by our composition, and is the
-								// latest revision.
-								*rev2,
-							},
-						}
-						return nil
-					}),
-				},
-				Applicator: resource.ApplyFn(func(_ context.Context, o client.Object, _ ...resource.ApplyOption) error {
-					// Ensure we were updated to reference the latest CompositionRevision.
+			client: &test.MockClient{
+				MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+					*obj.(*v1.Composition) = *comp
+					return nil
+				}),
+				MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
+					*obj.(*v1.CompositionRevisionList) = v1.CompositionRevisionList{
+						Items: []v1.CompositionRevision{
+							// This revision is owned by our composition, and is the
+							// latest revision.
+							*rev2,
+						},
+					}
+					return nil
+				}),
+				MockUpdate: test.NewMockUpdateFn(nil, func(obj client.Object) error {
 					want := &fake.Composite{
 						CompositionReferencer: fake.CompositionReferencer{
 							Ref: &corev1.ObjectReference{Name: comp.GetName()},
@@ -372,7 +371,7 @@ func TestFetchRevision(t *testing.T) {
 						},
 						CompositionUpdater: fake.CompositionUpdater{Policy: &manual},
 					}
-					if diff := cmp.Diff(want, o); diff != "" {
+					if diff := cmp.Diff(want, obj); diff != "" {
 						t.Errorf("Apply(): -want, +got: %s", diff)
 					}
 					return nil
@@ -394,27 +393,25 @@ func TestFetchRevision(t *testing.T) {
 		},
 		"OutdatedRevisionSet": {
 			reason: "We should return the latest revision and update our reference if an outdated revision is referenced.",
-			client: resource.ClientApplicator{
-				Client: &test.MockClient{
-					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
-						*obj.(*v1.Composition) = *comp
-						return nil
-					}),
-					MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
-						*obj.(*v1.CompositionRevisionList) = v1.CompositionRevisionList{
-							Items: []v1.CompositionRevision{
-								// This revision is owned by our composition, and is the
-								// latest revision.
-								*rev2,
+			client: &test.MockClient{
+				MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+					*obj.(*v1.Composition) = *comp
+					return nil
+				}),
+				MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
+					*obj.(*v1.CompositionRevisionList) = v1.CompositionRevisionList{
+						Items: []v1.CompositionRevision{
+							// This revision is owned by our composition, and is the
+							// latest revision.
+							*rev2,
 
-								// This is an outdated revision.
-								*rev1,
-							},
-						}
-						return nil
-					}),
-				},
-				Applicator: resource.ApplyFn(func(_ context.Context, o client.Object, _ ...resource.ApplyOption) error {
+							// This is an outdated revision.
+							*rev1,
+						},
+					}
+					return nil
+				}),
+				MockUpdate: test.NewMockUpdateFn(nil, func(obj client.Object) error {
 					// Ensure we were updated to reference the latest CompositionRevision.
 					want := &fake.Composite{
 						CompositionReferencer: fake.CompositionReferencer{
@@ -426,7 +423,7 @@ func TestFetchRevision(t *testing.T) {
 							},
 						},
 					}
-					if diff := cmp.Diff(want, o); diff != "" {
+					if diff := cmp.Diff(want, obj); diff != "" {
 						t.Errorf("Apply(): -want, +got: %s", diff)
 					}
 					return nil
@@ -451,26 +448,22 @@ func TestFetchRevision(t *testing.T) {
 		},
 		"SetRevisionError": {
 			reason: "We should return the latest revision and update our reference if none is set.",
-			client: resource.ClientApplicator{
-				Client: &test.MockClient{
-					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
-						*obj.(*v1.Composition) = *comp
-						return nil
-					}),
-					MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
-						*obj.(*v1.CompositionRevisionList) = v1.CompositionRevisionList{
-							Items: []v1.CompositionRevision{
-								// This revision is owned by our composition, and is the
-								// latest revision.
-								*rev2,
-							},
-						}
-						return nil
-					}),
-				},
-				Applicator: resource.ApplyFn(func(_ context.Context, _ client.Object, _ ...resource.ApplyOption) error {
-					return errBoom
+			client: &test.MockClient{
+				MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+					*obj.(*v1.Composition) = *comp
+					return nil
 				}),
+				MockList: test.NewMockListFn(nil, func(obj client.ObjectList) error {
+					*obj.(*v1.CompositionRevisionList) = v1.CompositionRevisionList{
+						Items: []v1.CompositionRevision{
+							// This revision is owned by our composition, and is the
+							// latest revision.
+							*rev2,
+						},
+					}
+					return nil
+				}),
+				MockUpdate: test.NewMockUpdateFn(errBoom),
 			},
 			args: args{
 				cr: &fake.Composite{
@@ -488,8 +481,8 @@ func TestFetchRevision(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := NewAPIRevisionFetcher(tc.client)
-			got, err := f.Fetch(tc.args.ctx, tc.args.cr)
 
+			got, err := f.Fetch(tc.args.ctx, tc.args.cr)
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("%s\nf.Fetch(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
@@ -518,10 +511,12 @@ func TestConfigure(t *testing.T) {
 		cp   resource.Composite
 		rev  *v1.CompositionRevision
 	}
+
 	type want struct {
 		cp  resource.Composite
 		err error
 	}
+
 	cases := map[string]struct {
 		reason string
 		args
@@ -596,11 +591,13 @@ func TestConfigure(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := &APIConfigurator{client: tc.args.kube}
-			err := c.Configure(context.Background(), tc.args.cp, tc.args.rev)
-			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+			c := &APIConfigurator{client: tc.kube}
+
+			err := c.Configure(context.Background(), tc.args.cp, tc.rev)
+			if diff := cmp.Diff(tc.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nConfigure(...): -want, +got:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.cp, tc.args.cp); diff != "" {
 				t.Errorf("\n%s\nConfigure(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -628,6 +625,7 @@ func TestSelectorResolver(t *testing.T) {
 		kube client.Client
 		cp   resource.Composite
 	}
+
 	type want struct {
 		cp  resource.Composite
 		err error
@@ -715,11 +713,13 @@ func TestSelectorResolver(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := NewAPILabelSelectorResolver(tc.args.kube)
+			c := NewAPILabelSelectorResolver(tc.kube)
+
 			err := c.SelectComposition(context.Background(), tc.args.cp)
-			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+			if diff := cmp.Diff(tc.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nSelectComposition(...): -want, +got:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.cp, tc.args.cp); diff != "" {
 				t.Errorf("\n%s\nSelectComposition(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -739,11 +739,13 @@ func TestAPIDefaultCompositionSelector(t *testing.T) {
 			CompositeTypeRef: tref,
 		},
 	}
+
 	type args struct {
 		kube   client.Client
 		defRef corev1.ObjectReference
 		cp     resource.Composite
 	}
+
 	type want struct {
 		cp  resource.Composite
 		err error
@@ -835,11 +837,13 @@ func TestAPIDefaultCompositionSelector(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := NewAPIDefaultCompositionSelector(tc.args.kube, tc.args.defRef, event.NewNopRecorder())
+			c := NewAPIDefaultCompositionSelector(tc.kube, tc.defRef, event.NewNopRecorder())
+
 			err := c.SelectComposition(context.Background(), tc.args.cp)
-			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+			if diff := cmp.Diff(tc.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nSelectComposition(...): -want, +got:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.cp, tc.args.cp); diff != "" {
 				t.Errorf("\n%s\nSelectComposition(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -858,10 +862,13 @@ func TestAPIEnforcedCompositionSelector(t *testing.T) {
 			CompositeTypeRef: tref,
 		},
 	}
+
 	type args struct {
-		def v1.CompositeResourceDefinition
-		cp  resource.Composite
+		kube client.Client
+		def  v1.CompositeResourceDefinition
+		cp   resource.Composite
 	}
+
 	type want struct {
 		cp  resource.Composite
 		err error
@@ -875,6 +882,13 @@ func TestAPIEnforcedCompositionSelector(t *testing.T) {
 		"NoEnforced": {
 			reason: "Should be no-op if no enforced composition ref is given in definition",
 			args: args{
+				kube: &test.MockClient{
+					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+						def := &v1.CompositeResourceDefinition{}
+						def.DeepCopyInto(obj.(*v1.CompositeResourceDefinition))
+						return nil
+					}),
+				},
 				def: v1.CompositeResourceDefinition{},
 				cp:  &fake.Composite{},
 			},
@@ -885,6 +899,15 @@ func TestAPIEnforcedCompositionSelector(t *testing.T) {
 		"EnforcedAlreadySet": {
 			reason: "Should be no-op if enforced composition reference is already set",
 			args: args{
+				kube: &test.MockClient{
+					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+						def := &v1.CompositeResourceDefinition{
+							Spec: v1.CompositeResourceDefinitionSpec{EnforcedCompositionRef: &v1.CompositionReference{Name: comp.Name}},
+						}
+						def.DeepCopyInto(obj.(*v1.CompositeResourceDefinition))
+						return nil
+					}),
+				},
 				def: v1.CompositeResourceDefinition{
 					Spec: v1.CompositeResourceDefinitionSpec{EnforcedCompositionRef: &v1.CompositionReference{Name: comp.Name}},
 				},
@@ -901,6 +924,16 @@ func TestAPIEnforcedCompositionSelector(t *testing.T) {
 		"Success": {
 			reason: "Successfully set the default composition reference",
 			args: args{
+				kube: &test.MockClient{
+					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+						def := &v1.CompositeResourceDefinition{
+							Spec: v1.CompositeResourceDefinitionSpec{EnforcedCompositionRef: &v1.CompositionReference{Name: comp.Name}},
+						}
+						def.DeepCopyInto(obj.(*v1.CompositeResourceDefinition))
+						return nil
+					}),
+					MockUpdate: test.NewMockUpdateFn(nil),
+				},
 				def: v1.CompositeResourceDefinition{
 					Spec: v1.CompositeResourceDefinitionSpec{EnforcedCompositionRef: &v1.CompositionReference{Name: comp.Name}},
 				},
@@ -915,6 +948,16 @@ func TestAPIEnforcedCompositionSelector(t *testing.T) {
 		"SuccessOverride": {
 			reason: "Successfully set the default composition reference even if another one was set",
 			args: args{
+				kube: &test.MockClient{
+					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
+						def := &v1.CompositeResourceDefinition{
+							Spec: v1.CompositeResourceDefinitionSpec{EnforcedCompositionRef: &v1.CompositionReference{Name: comp.Name}},
+						}
+						def.DeepCopyInto(obj.(*v1.CompositeResourceDefinition))
+						return nil
+					}),
+					MockUpdate: test.NewMockUpdateFn(nil),
+				},
 				def: v1.CompositeResourceDefinition{
 					Spec: v1.CompositeResourceDefinitionSpec{EnforcedCompositionRef: &v1.CompositionReference{Name: comp.Name}},
 				},
@@ -931,11 +974,12 @@ func TestAPIEnforcedCompositionSelector(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := NewEnforcedCompositionSelector(tc.args.def, event.NewNopRecorder())
+			c := NewEnforcedCompositionSelector(tc.kube, corev1.ObjectReference{}, event.NewNopRecorder())
 			err := c.SelectComposition(context.Background(), tc.args.cp)
-			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+			if diff := cmp.Diff(tc.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nSelectComposition(...): -want, +got:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.cp, tc.args.cp); diff != "" {
 				t.Errorf("\n%s\nSelectComposition(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -948,6 +992,7 @@ func TestAPINamingConfigurator(t *testing.T) {
 		kube client.Client
 		cp   resource.Composite
 	}
+
 	type want struct {
 		cp  resource.Composite
 		err error
@@ -982,11 +1027,13 @@ func TestAPINamingConfigurator(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := NewAPINamingConfigurator(tc.args.kube)
+			c := NewAPINamingConfigurator(tc.kube)
+
 			err := c.Configure(context.Background(), tc.args.cp, nil)
-			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+			if diff := cmp.Diff(tc.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nConfigure(...): -want, +got:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.cp, tc.args.cp); diff != "" {
 				t.Errorf("\n%s\nConfigure(...): -want, +got:\n%s", tc.reason, diff)
 			}

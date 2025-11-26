@@ -25,16 +25,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/claim"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/composite"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/reference"
-	"github.com/crossplane/crossplane-runtime/pkg/test"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/claim"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/reference"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
-	"github.com/crossplane/crossplane/internal/names"
-	"github.com/crossplane/crossplane/internal/xcrd"
+	"github.com/crossplane/crossplane/v2/internal/names"
+	"github.com/crossplane/crossplane/v2/internal/xcrd"
 )
 
 func TestClientSideSync(t *testing.T) {
@@ -44,11 +44,13 @@ func TestClientSideSync(t *testing.T) {
 		c  client.Client
 		ng names.NameGenerator
 	}
+
 	type args struct {
 		ctx context.Context
 		cm  *claim.Unstructured
 		xr  *composite.Unstructured
 	}
+
 	type want struct {
 		cm  *claim.Unstructured
 		xr  *composite.Unstructured
@@ -396,14 +398,16 @@ func TestClientSideSync(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := NewClientSideCompositeSyncer(tc.params.c, tc.params.ng)
-			err := s.Sync(tc.args.ctx, tc.args.cm, tc.args.xr)
+			err := s.Sync(tc.args.ctx, tc.args.cm, tc.args.xr, false)
 
 			if diff := cmp.Diff(tc.want.cm, tc.args.cm); diff != "" {
 				t.Errorf("\n%s\ns.Sync(...): -want, +got:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.xr, tc.args.xr); diff != "" {
 				t.Errorf("\n%s\ns.Sync(...): -want, +got:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ns.Sync(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
@@ -414,9 +418,10 @@ func TestClientSideSync(t *testing.T) {
 type CompositeModifier func(xr *composite.Unstructured)
 
 func NewComposite(m ...CompositeModifier) *composite.Unstructured {
-	xr := composite.New(composite.WithGroupVersionKind(schema.GroupVersionKind{}))
+	xr := composite.New(composite.WithGroupVersionKind(schema.GroupVersionKind{}), composite.WithSchema(composite.SchemaLegacy))
 	for _, fn := range m {
 		fn(xr)
 	}
+
 	return xr
 }

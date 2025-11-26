@@ -28,13 +28,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/pkg/parser"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/parser"
 
-	"github.com/crossplane/crossplane/internal/xpkg"
-	"github.com/crossplane/crossplane/internal/xpkg/parser/examples"
-	"github.com/crossplane/crossplane/internal/xpkg/parser/yaml"
+	"github.com/crossplane/crossplane/v2/internal/xpkg"
+	"github.com/crossplane/crossplane/v2/internal/xpkg/parser/examples"
+	"github.com/crossplane/crossplane/v2/internal/xpkg/parser/yaml"
 )
 
 const (
@@ -57,6 +57,7 @@ func (c *buildCmd) AfterApply() error {
 	if err != nil {
 		return err
 	}
+
 	c.root = root
 
 	ex, err := filepath.Abs(c.ExamplesRoot)
@@ -95,11 +96,11 @@ func (c *buildCmd) AfterApply() error {
 type buildCmd struct {
 	// Flags. Keep sorted alphabetically.
 	EmbedRuntimeImage        string   `help:"An OCI image to embed in the package as its runtime."                                                                                                    placeholder:"NAME"                                                     xor:"runtime-image"`
-	EmbedRuntimeImageTarball string   `help:"An OCI image tarball to embed in the package as its runtime."                                                                                            placeholder:"PATH"                                                     type:"existingfile" xor:"runtime-image"`
-	ExamplesRoot             string   `default:"./examples"                                                                                                                                           help:"A directory of example YAML files to include in the package."    short:"e"           type:"path"`
+	EmbedRuntimeImageTarball string   `help:"An OCI image tarball to embed in the package as its runtime."                                                                                            placeholder:"PATH"                                                     predictor:"file"      type:"existingfile" xor:"runtime-image"`
+	ExamplesRoot             string   `default:"./examples"                                                                                                                                           help:"A directory of example YAML files to include in the package."    predictor:"directory" short:"e"           type:"path"`
 	Ignore                   []string `help:"Comma-separated file paths, specified relative to --package-root, to exclude from the package. Wildcards are supported. Directories cannot be excluded." placeholder:"PATH"`
-	PackageFile              string   `help:"The file to write the package to. Defaults to a generated filename in --package-root."                                                                   placeholder:"PATH"                                                     short:"o"           type:"path"`
-	PackageRoot              string   `default:"."                                                                                                                                                    help:"The directory that contains the package's crossplane.yaml file." short:"f"           type:"existingdir"`
+	PackageFile              string   `help:"The file to write the package to. Defaults to a generated filename in --package-root."                                                                   placeholder:"PATH"                                                     predictor:"xpkg_file" short:"o"           type:"path"`
+	PackageRoot              string   `default:"."                                                                                                                                                    help:"The directory that contains the package's crossplane.yaml file." predictor:"directory" short:"f"           type:"existingdir"`
 
 	// Internal state. These aren't part of the user-exposed CLI structure.
 	fs      afero.Fs
@@ -131,22 +132,26 @@ func (c *buildCmd) GetRuntimeBaseImageOpts() ([]xpkg.BuildOpt, error) {
 		if err != nil {
 			return nil, errors.Wrap(err, errLoadRuntimeTarball)
 		}
+
 		return []xpkg.BuildOpt{xpkg.WithBase(img)}, nil
 	case c.EmbedRuntimeImage != "":
-		// We intentionally don't override the default registry here. Doing so
-		// leads to unintuitive behavior, in that you can't tag your runtime
-		// image as some/image:latest then pass that same tag to xpkg build.
-		// Instead you'd need to pass index.docker.io/some/image:latest.
+		// We intentionally don't use strict validation here. Usually
+		// we'll tag the runtime image as something like
+		// 'runtime-amd64', and never actually push it to an OCI
+		// registry. That tag wouldn't pass strict validation.
 		ref, err := name.ParseReference(c.EmbedRuntimeImage)
 		if err != nil {
 			return nil, errors.Wrap(err, errParseRuntimeImageRef)
 		}
+
 		img, err := daemon.Image(ref, daemon.WithContext(context.Background()))
 		if err != nil {
 			return nil, errors.Wrap(err, errPullRuntimeImage)
 		}
+
 		return []xpkg.BuildOpt{xpkg.WithBase(img)}, nil
 	}
+
 	return nil, nil
 }
 
@@ -158,19 +163,23 @@ func (c *buildCmd) GetOutputFileName(meta runtime.Object, hash v1.Hash) (string,
 		if !ok {
 			return "", errors.New(errGetNameFromMeta)
 		}
+
 		pkgName := xpkg.FriendlyID(pkgMeta.GetName(), hash.Hex)
 		output = xpkg.BuildPath(c.root, pkgName, xpkg.XpkgExtension)
 	}
+
 	return output, nil
 }
 
 // Run executes the build command.
 func (c *buildCmd) Run(logger logging.Logger) error {
 	var buildOpts []xpkg.BuildOpt
+
 	rtBuildOpts, err := c.GetRuntimeBaseImageOpts()
 	if err != nil {
 		return errors.Wrap(err, errGetRuntimeBaseImageOpts)
 	}
+
 	buildOpts = append(buildOpts, rtBuildOpts...)
 
 	img, meta, err := c.builder.Build(context.Background(), buildOpts...)
@@ -194,10 +203,13 @@ func (c *buildCmd) Run(logger logging.Logger) error {
 	}
 
 	defer func() { _ = f.Close() }()
+
 	if err := tarball.Write(nil, img, f); err != nil {
 		return err
 	}
+
 	logger.Info("xpkg saved", "output", output)
+
 	return nil
 }
 
@@ -211,8 +223,10 @@ func buildFilters(root string, skips []string) []parser.FilterFn {
 	}
 	opts := make([]parser.FilterFn, len(skips)+len(defaultFns))
 	copy(opts, defaultFns)
+
 	for i, s := range skips {
 		opts[i+len(defaultFns)] = parser.SkipPath(filepath.Join(root, s))
 	}
+
 	return opts
 }

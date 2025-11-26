@@ -23,34 +23,34 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 
-	fnv1 "github.com/crossplane/crossplane/apis/apiextensions/fn/proto/v1"
+	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
 
-// Metrics are requests, errors, and duration (RED) metrics for composition
+// PrometheusMetrics are requests, errors, and duration (RED) metrics for
 // function runs.
-type Metrics struct {
+type PrometheusMetrics struct {
 	requests  *prometheus.CounterVec
 	responses *prometheus.CounterVec
 	duration  *prometheus.HistogramVec
 }
 
-// NewMetrics creates metrics for composition function runs.
-func NewMetrics() *Metrics {
-	return &Metrics{
+// NewPrometheusMetrics creates metrics for function runs.
+func NewPrometheusMetrics() *PrometheusMetrics {
+	return &PrometheusMetrics{
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Subsystem: "composition",
+			Subsystem: "function",
 			Name:      "run_function_request_total",
 			Help:      "Total number of RunFunctionRequests sent.",
 		}, []string{"function_name", "function_package", "grpc_target", "grpc_method"}),
 
 		responses: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Subsystem: "composition",
+			Subsystem: "function",
 			Name:      "run_function_response_total",
 			Help:      "Total number of RunFunctionResponses received.",
 		}, []string{"function_name", "function_package", "grpc_target", "grpc_method", "grpc_code", "result_severity"}),
 
 		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Subsystem: "composition",
+			Subsystem: "function",
 			Name:      "run_function_seconds",
 			Help:      "Histogram of RunFunctionResponse latency (seconds).",
 			Buckets:   prometheus.DefBuckets,
@@ -61,7 +61,7 @@ func NewMetrics() *Metrics {
 // Describe sends the super-set of all possible descriptors of metrics
 // collected by this Collector to the provided channel and returns once
 // the last descriptor has been sent.
-func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
+func (m *PrometheusMetrics) Describe(ch chan<- *prometheus.Desc) {
 	m.requests.Describe(ch)
 	m.responses.Describe(ch)
 	m.duration.Describe(ch)
@@ -70,7 +70,7 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 // Collect is called by the Prometheus registry when collecting
 // metrics. The implementation sends each collected metric via the
 // provided channel and returns once the last metric has been sent.
-func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
+func (m *PrometheusMetrics) Collect(ch chan<- prometheus.Metric) {
 	m.requests.Collect(ch)
 	m.responses.Collect(ch)
 	m.duration.Collect(ch)
@@ -78,7 +78,7 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 
 // CreateInterceptor returns a gRPC UnaryClientInterceptor for the named
 // function. The supplied package (pkg) should be the package's OCI reference.
-func (m *Metrics) CreateInterceptor(name, pkg string) grpc.UnaryClientInterceptor {
+func (m *PrometheusMetrics) CreateInterceptor(name, pkg string) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		l := prometheus.Labels{"function_name": name, "function_package": pkg, "grpc_target": cc.Target(), "grpc_method": method}
 
@@ -97,6 +97,7 @@ func (m *Metrics) CreateInterceptor(name, pkg string) grpc.UnaryClientIntercepto
 		// no fatal results, has severity "Warning". A response with fatal
 		// results has severity "Fatal".
 		l["result_severity"] = "Normal"
+
 		if rsp, ok := reply.(*fnv1.RunFunctionResponse); ok {
 			for _, r := range rsp.GetResults() {
 				// Keep iterating if we see a warning result - we might still

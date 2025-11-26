@@ -25,15 +25,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/claim"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/composite"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/claim"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
-	"github.com/crossplane/crossplane/internal/names"
-	"github.com/crossplane/crossplane/internal/xcrd"
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	"github.com/crossplane/crossplane/v2/internal/names"
+	"github.com/crossplane/crossplane/v2/internal/xcrd"
 )
 
 const (
@@ -67,7 +68,7 @@ func NewClientSideCompositeSyncer(c client.Client, ng names.NameGenerator) *Clie
 
 // Sync the supplied claim with the supplied composite resource (XR). Syncing
 // may involve creating and binding the XR.
-func (s *ClientSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstructured, xr *composite.Unstructured) error {
+func (s *ClientSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstructured, xr *composite.Unstructured, hasEnforcedComposition bool) error {
 	// First we sync claim -> XR.
 
 	// It's possible we're being asked to configure a statically provisioned XR.
@@ -99,8 +100,12 @@ func (s *ClientSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	// 1. Grabbing a map whose keys represent all well-known claim fields.
 	// 2. Deleting any well-known fields that we want to propagate.
 	// 3. Using the resulting map keys to filter the claim's spec.
-	wellKnownClaimFields := xcrd.CompositeResourceClaimSpecProps()
+	wellKnownClaimFields := xcrd.CompositeResourceClaimSpecProps(nil)
 	for _, field := range xcrd.PropagateSpecProps {
+		// Skip propagating compositionRef if enforcedCompositionRef is set
+		if field == "compositionRef" && hasEnforcedComposition {
+			continue
+		}
 		delete(wellKnownClaimFields, field)
 	}
 
@@ -150,16 +155,18 @@ func (s *ClientSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	// then crashed before saving a reference to it. We'd create another XR on
 	// the next reconcile.
 	existing := cm.GetResourceReference()
+
 	proposed := xr.GetReference()
 	if !cmp.Equal(existing, proposed) {
 		cm.SetResourceReference(proposed)
+
 		if err := s.client.Update(ctx, cm); err != nil {
 			return errors.Wrap(err, errUpdateClaim)
 		}
 	}
 
 	// Apply the XR, unless it's a no-op change.
-	err := s.client.Apply(ctx, xr, resource.AllowUpdateIf(func(old, obj runtime.Object) bool { return !cmp.Equal(old, obj) }))
+	err := s.client.Applicator.Apply(ctx, xr, resource.AllowUpdateIf(func(old, obj runtime.Object) bool { return !cmp.Equal(old, obj) }))
 	if err := resource.Ignore(resource.IsNotAllowed, err); err != nil {
 		return errors.Wrap(err, errApplyComposite)
 	}
@@ -171,7 +178,7 @@ func (s *ClientSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 		// XR status fields overwrite non-empty claim fields.
 		withMergeOptions(mergo.WithOverride),
 		// Don't sync XR machinery (i.e. status conditions, connection details).
-		withSrcFilter(xcrd.GetPropFields(xcrd.CompositeResourceStatusProps())...)); err != nil {
+		withSrcFilter(xcrd.GetPropFields(xcrd.CompositeResourceStatusProps(v1.CompositeResourceScopeLegacyCluster))...)); err != nil {
 		return errors.Wrap(err, errMergeClaimStatus)
 	}
 
@@ -188,13 +195,31 @@ func (s *ClientSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 		meta.SetExternalName(cm, en)
 	}
 
+	// Propagate composition ref from the XR if the claim doesn't have an
+	// opinion. Composition and revision selectors only propagate from claim ->
+	// XR. When a claim has selectors **and no reference** the flow should be:
+	//
+	// 1. Claim controller propagates selectors claim -> XR.
+	// 2. XR controller uses selectors to set XR's composition ref.
+	// 3. Claim controller propagates ref XR -> claim.
+	//
+	// When a claim sets a composition ref, it supersedes selectors. It should
+	// only be propagated claim -> XR.
+	//
+	// EXCEPTION: When enforcedCompositionRef is set, we ALWAYS propagate
+	// XR -> claim, overriding whatever the claim has. The enforced composition
+	// takes precedence over any claim preference.
+	if ref := xr.GetCompositionReference(); ref != nil && (cm.GetCompositionReference() == nil || hasEnforcedComposition) {
+		cm.SetCompositionReference(ref)
+	}
+
 	// We want to propagate the XR's spec to the claim's spec, but first we must
 	// filter out any well-known fields that are unique to XR. We do this by:
 	// 1. Grabbing a map whose keys represent all well-known XR fields.
 	// 2. Deleting any well-known fields that we want to propagate.
 	// 3. Filtering OUT the remaining map keys from the XR's spec so that we end
 	//    up adding only the well-known fields to the claim's spec.
-	wellKnownXRFields := xcrd.CompositeResourceSpecProps()
+	wellKnownXRFields := xcrd.CompositeResourceSpecProps(v1.CompositeResourceScopeLegacyCluster, nil)
 	for _, field := range xcrd.PropagateSpecProps {
 		delete(wellKnownXRFields, field)
 	}

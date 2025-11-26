@@ -21,16 +21,17 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-containerregistry/pkg/name"
 	conregv1 "github.com/google/go-containerregistry/pkg/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/test"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 
-	v1 "github.com/crossplane/crossplane/apis/pkg/v1"
-	"github.com/crossplane/crossplane/internal/xpkg"
-	"github.com/crossplane/crossplane/internal/xpkg/fake"
+	v1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	"github.com/crossplane/crossplane/v2/internal/xpkg"
+	"github.com/crossplane/crossplane/v2/internal/xpkg/fake"
 )
 
 func TestPackageRevisioner(t *testing.T) {
@@ -67,6 +68,11 @@ func TestPackageRevisioner(t *testing.T) {
 							PackagePullPolicy: &pullNever,
 						},
 					},
+					Status: v1.ProviderStatus{
+						PackageStatus: v1.PackageStatus{
+							ResolvedPackage: "my-revision",
+						},
+					},
 				},
 			},
 			want: want{
@@ -82,20 +88,58 @@ func TestPackageRevisioner(t *testing.T) {
 					},
 					Spec: v1.ProviderSpec{
 						PackageSpec: v1.PackageSpec{
-							Package:           "crossplane/provider-aws:latest",
+							Package:           "xpkg.crossplane.io/crossplane/provider-aws:latest",
 							PackagePullPolicy: &pullIfNotPresent,
 						},
 					},
 					Status: v1.ProviderStatus{
 						PackageStatus: v1.PackageStatus{
+							ResolvedPackage:   "xpkg.crossplane.io/crossplane/provider-aws:latest",
 							CurrentRevision:   "return-me",
-							CurrentIdentifier: "crossplane/provider-aws:latest",
+							CurrentIdentifier: "xpkg.crossplane.io/crossplane/provider-aws:latest",
 						},
 					},
 				},
 			},
 			want: want{
 				digest: "return-me",
+			},
+		},
+		"SuccessfulPullRewrittenImage": {
+			reason: "Should resolve the image correctly when it has been rewritten by an image config.",
+			args: args{
+				f: &fake.MockFetcher{
+					MockHead: func(ref name.Reference) (*conregv1.Descriptor, error) {
+						if ref.String() != "registry.acme.co/crossplane/provider-aws:latest" {
+							return nil, errors.Errorf("incorrect ref %q", ref)
+						}
+						return &conregv1.Descriptor{
+							Digest: conregv1.Hash{
+								Algorithm: "sha256",
+								Hex:       "ecc25c121431dfc7058754427f97c034ecde26d4aafa0da16d258090e0443904",
+							},
+						}, nil
+					},
+				},
+				pkg: &v1.Provider{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "provider-aws",
+					},
+					Spec: v1.ProviderSpec{
+						PackageSpec: v1.PackageSpec{
+							Package:           "xpkg.crossplane.io/crossplane/provider-aws:latest",
+							PackagePullPolicy: &pullIfNotPresent,
+						},
+					},
+					Status: v1.ProviderStatus{
+						PackageStatus: v1.PackageStatus{
+							ResolvedPackage: "registry.acme.co/crossplane/provider-aws:latest",
+						},
+					},
+				},
+			},
+			want: want{
+				digest: "provider-aws-ecc25c121431",
 			},
 		},
 		"SuccessfulDigest": {
@@ -107,8 +151,13 @@ func TestPackageRevisioner(t *testing.T) {
 					},
 					Spec: v1.ProviderSpec{
 						PackageSpec: v1.PackageSpec{
-							Package:           "crossplane-contrib/provider-nop@sha256:ecc25c121431dfc7058754427f97c034ecde26d4aafa0da16d258090e0443904",
+							Package:           "xpkg.crossplane.io/crossplane-contrib/provider-nop@sha256:ecc25c121431dfc7058754427f97c034ecde26d4aafa0da16d258090e0443904",
 							PackagePullPolicy: &pullIfNotPresent,
+						},
+					},
+					Status: v1.ProviderStatus{
+						PackageStatus: v1.PackageStatus{
+							ResolvedPackage: "xpkg.crossplane.io/crossplane-contrib/provider-nop@sha256:ecc25c121431dfc7058754427f97c034ecde26d4aafa0da16d258090e0443904",
 						},
 					},
 				},
@@ -134,6 +183,11 @@ func TestPackageRevisioner(t *testing.T) {
 							Package: "*THISISNOTVALID",
 						},
 					},
+					Status: v1.ProviderStatus{
+						PackageStatus: v1.PackageStatus{
+							ResolvedPackage: "*THISISNOTVALID",
+						},
+					},
 				},
 			},
 			want: want{
@@ -149,7 +203,12 @@ func TestPackageRevisioner(t *testing.T) {
 				pkg: &v1.Provider{
 					Spec: v1.ProviderSpec{
 						PackageSpec: v1.PackageSpec{
-							Package: "test/test:test",
+							Package: "xpkg.crossplane.io/test/test:test",
+						},
+					},
+					Status: v1.ProviderStatus{
+						PackageStatus: v1.PackageStatus{
+							ResolvedPackage: "xpkg.crossplane.io/test/test:test",
 						},
 					},
 				},
@@ -163,11 +222,12 @@ func TestPackageRevisioner(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := NewPackageRevisioner(tc.args.f)
-			h, err := r.Revision(context.TODO(), tc.args.pkg, tc.args.pullSecretFromConfig)
 
+			h, err := r.Revision(context.TODO(), tc.args.pkg, tc.args.pullSecretFromConfig)
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nr.Name(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.digest, h, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nr.Name(...): -want, +got:\n%s", tc.reason, diff)
 			}

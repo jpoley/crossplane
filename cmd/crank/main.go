@@ -18,15 +18,20 @@ limitations under the License.
 package main
 
 import (
+	"os"
+
 	"github.com/alecthomas/kong"
+	"github.com/willabides/kongplete"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/cmd/crank/beta"
-	"github.com/crossplane/crossplane/cmd/crank/render"
-	"github.com/crossplane/crossplane/cmd/crank/version"
-	"github.com/crossplane/crossplane/cmd/crank/xpkg"
+	"github.com/crossplane/crossplane/v2/cmd/crank/alpha"
+	"github.com/crossplane/crossplane/v2/cmd/crank/beta"
+	"github.com/crossplane/crossplane/v2/cmd/crank/completion"
+	"github.com/crossplane/crossplane/v2/cmd/crank/render"
+	"github.com/crossplane/crossplane/v2/cmd/crank/version"
+	"github.com/crossplane/crossplane/v2/cmd/crank/xpkg"
 )
 
 var _ = kong.Must(&cli{})
@@ -38,6 +43,7 @@ type (
 func (v verboseFlag) BeforeApply(ctx *kong.Context) error { //nolint:unparam // BeforeApply requires this signature.
 	logger := logging.NewLogrLogger(zap.New(zap.UseDevMode(true)))
 	ctx.BindTo(logger, (*logging.Logger)(nil))
+
 	return nil
 }
 
@@ -52,16 +58,20 @@ type cli struct {
 
 	// The alpha and beta subcommands are intentionally in a separate block. We
 	// want them to appear after all other subcommands.
+	Alpha   alpha.Cmd   `cmd:"" help:"Alpha commands."`
 	Beta    beta.Cmd    `cmd:"" help:"Beta commands."`
 	Version version.Cmd `cmd:"" help:"Print the client and server version information for the current context."`
 
 	// Flags.
 	Verbose verboseFlag `help:"Print verbose logging statements." name:"verbose"`
+
+	// Completion
+	Completions kongplete.InstallCompletions `cmd:"" help:"Get shell (bash/zsh/fish) completions. You can source this command to get completions for the login shell. Example: 'source <(crossplane completions)'"`
 }
 
 func main() {
 	logger := logging.NewNopLogger()
-	ctx := kong.Parse(&cli{},
+	parser := kong.Must(&cli{},
 		kong.Name("crossplane"),
 		kong.Description("A command line tool for interacting with Crossplane."),
 		// Binding a variable to kong context makes it available to all commands
@@ -73,6 +83,14 @@ func main() {
 			WrapUpperBound: 80,
 		}),
 		kong.UsageOnError())
-	err := ctx.Run()
+
+	kongplete.Complete(parser,
+		kongplete.WithPredictors(completion.Predictors()),
+	)
+
+	ctx, err := parser.Parse(os.Args[1:])
+	parser.FatalIfErrorf(err)
+
+	err = ctx.Run()
 	ctx.FatalIfErrorf(err)
 }

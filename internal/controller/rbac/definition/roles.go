@@ -20,9 +20,9 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
 
-	v1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
 )
 
 const (
@@ -44,8 +44,6 @@ const (
 	keyAggregateToNSView = "rbac.crossplane.io/aggregate-to-ns-view"
 
 	keyAggregateToBrowse = "rbac.crossplane.io/aggregate-to-browse"
-
-	keyXRD = "rbac.crossplane.io/xrd"
 
 	valTrue = "true"
 
@@ -104,8 +102,6 @@ func RenderClusterRoles(d *v1.CompositeResourceDefinition) []rbacv1.ClusterRole 
 
 				keyAggregateToEdit:   valTrue,
 				keyAggregateToNSEdit: valTrue,
-
-				keyXRD: d.GetName(),
 			},
 		},
 		Rules: []rbacv1.PolicyRule{
@@ -126,8 +122,6 @@ func RenderClusterRoles(d *v1.CompositeResourceDefinition) []rbacv1.ClusterRole 
 			Labels: map[string]string{
 				keyAggregateToView:   valTrue,
 				keyAggregateToNSView: valTrue,
-
-				keyXRD: d.GetName(),
 			},
 		},
 		Rules: []rbacv1.PolicyRule{
@@ -147,8 +141,6 @@ func RenderClusterRoles(d *v1.CompositeResourceDefinition) []rbacv1.ClusterRole 
 			Name: namePrefix + d.GetName() + nameSuffixBrowse,
 			Labels: map[string]string{
 				keyAggregateToBrowse: valTrue,
-
-				keyXRD: d.GetName(),
 			},
 		},
 		Rules: []rbacv1.PolicyRule{

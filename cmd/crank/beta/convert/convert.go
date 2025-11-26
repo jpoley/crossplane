@@ -19,15 +19,11 @@ limitations under the License.
 package convert
 
 import (
-	"github.com/crossplane/crossplane/cmd/crank/beta/convert/compositionenvironment"
-	"github.com/crossplane/crossplane/cmd/crank/beta/convert/deploymentruntime"
-	"github.com/crossplane/crossplane/cmd/crank/beta/convert/pipelinecomposition"
+	"github.com/crossplane/crossplane/v2/cmd/crank/beta/convert/compositionenvironment"
 )
 
 // Cmd converts a Crossplane resource to a newer version or a different kind.
 type Cmd struct {
-	DeploymentRuntime      deploymentruntime.Cmd      `cmd:"" help:"Convert a ControllerConfig to a DeploymentRuntimeConfig."`
-	PipelineComposition    pipelinecomposition.Cmd    `cmd:"" help:"Convert a Patch-and-Transform Composition to a Function Pipeline Composition."`
 	CompositionEnvironment compositionenvironment.Cmd `cmd:"" help:"Convert a Pipeline Composition to use function-environment-configs."`
 }
 
@@ -37,16 +33,9 @@ func (c *Cmd) Help() string {
 This command converts a Crossplane resource to a newer version or a different kind.
 
 Currently supported conversions:
-* ControllerConfig -> DeploymentRuntimeConfig
-* Classic Compositions -> Function Pipeline Compositions
+  * native Composition Environment -> function-environment-configs
 
 Examples:
-  # Write out a DeploymentRuntimeConfigFile from a ControllerConfig
-  crossplane beta convert deployment-runtime cc.yaml -o drc.yaml
-
-  # Convert an existing Composition to use Pipelines
-  crossplane beta convert pipeline-composition composition.yaml -o pipeline-composition.yaml
-
   # Convert an existing Composition to use function-environment-configs instead of native Composition Environment,
   # requires the composition to be in Pipeline mode already.
   crossplane beta convert composition-environment composition.yaml -o composition-environment.yaml

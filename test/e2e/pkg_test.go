@@ -17,33 +17,37 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8sapiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/e2e-framework/klient/k8s"
+	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 	"sigs.k8s.io/e2e-framework/third_party/helm"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 
-	apiextensionsv1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
-	pkgv1 "github.com/crossplane/crossplane/apis/pkg/v1"
-	"github.com/crossplane/crossplane/apis/pkg/v1beta1"
-	"github.com/crossplane/crossplane/test/e2e/config"
-	"github.com/crossplane/crossplane/test/e2e/funcs"
+	apiextensionsv1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	pkgv1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	"github.com/crossplane/crossplane/v2/apis/pkg/v1beta1"
+	"github.com/crossplane/crossplane/v2/test/e2e/config"
+	"github.com/crossplane/crossplane/v2/test/e2e/funcs"
 )
 
 const (
 	// LabelAreaPkg is applied to all features pertaining to packages, (i.e.
 	// Providers, Configurations, etc).
 	LabelAreaPkg = "pkg"
-	// SuitePackageDependencyUpgrades is the value for the config.LabelTestSuite
+	// SuitePackageDependencyUpdates is the value for the config.LabelTestSuite
 	// label to be assigned to tests that should be part of the Package Upgrade
 	// test suite.
-	SuitePackageDependencyUpgrades = "package-dependency-upgrades"
+	SuitePackageDependencyUpdates = "package-dependency-updates"
 	// SuitePackageSignatureVerification is the value for the config.LabelTestSuite
 	// label to be assigned to tests that should be part of the Signature
 	// Verification test suite.
@@ -51,14 +55,15 @@ const (
 )
 
 func init() {
-	environment.AddTestSuite(SuitePackageDependencyUpgrades,
+	environment.AddTestSuite(SuitePackageDependencyUpdates,
 		config.WithHelmInstallOpts(
-			helm.WithArgs("--set args={--debug,--enable-dependency-version-upgrades}"),
+			helm.WithArgs("--set args={--debug,--enable-dependency-version-upgrades,--enable-dependency-version-downgrades}"),
 		),
 		config.WithLabelsToSelect(features.Labels{
-			config.LabelTestSuite: []string{SuitePackageDependencyUpgrades, config.TestSuiteDefault},
+			config.LabelTestSuite: []string{SuitePackageDependencyUpdates, config.TestSuiteDefault},
 		}),
 	)
+
 	environment.AddTestSuite(SuitePackageSignatureVerification,
 		config.WithHelmInstallOpts(
 			helm.WithArgs("--set args={--debug,--enable-signature-verification}"),
@@ -83,7 +88,7 @@ func TestConfigurationPullFromPrivateRegistry(t *testing.T) {
 			)).
 			Assess("ConfigurationIsHealthy", funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration.yaml", pkgv1.Healthy(), pkgv1.Active())).
 			WithTeardown("DeleteConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "*.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "*.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "*.yaml"),
 			)).Feature(),
 	)
@@ -109,11 +114,11 @@ func TestConfigurationWithDependency(t *testing.T) {
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "lock.yaml", v1beta1.ResolutionSucceeded())). // TODO(ezgidemirel): use ResourceHasConditionWithin instead
 			// Dependencies are not automatically deleted.
 			WithTeardown("DeleteConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration.yaml"),
 			)).
 			WithTeardown("DeleteRequiredProvider", funcs.AllOf(
-				funcs.DeleteResources(manifests, "provider-dependency.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider-dependency.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider-dependency.yaml"),
 			)).
 			WithTeardown("DeleteProviderRevision", funcs.AllOf(
@@ -124,6 +129,8 @@ func TestConfigurationWithDependency(t *testing.T) {
 
 func TestProviderUpgrade(t *testing.T) {
 	manifests := "test/e2e/manifests/pkg/provider"
+
+	var controller *metav1.OwnerReference
 
 	environment.Test(t,
 		features.NewWithDescription(t.Name(), "Tests that we can upgrade a provider to a new version, even when a managed resource has been created.").
@@ -139,10 +146,43 @@ func TestProviderUpgrade(t *testing.T) {
 				funcs.ApplyResources(FieldManager, manifests, "mr-initial.yaml"),
 				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "mr-initial.yaml"),
 			)).
+			Assess("RecordInitialCRDController", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+				t.Helper()
+
+				crd := &k8sapiextensionsv1.CustomResourceDefinition{}
+				if err := c.Client().Resources().Get(ctx, "nopresources.nop.crossplane.io", "", crd); err != nil {
+					t.Errorf("failed to get CRD: %v", err)
+					return ctx
+				}
+
+				controller = metav1.GetControllerOf(crd)
+				return ctx
+			}).
 			Assess("UpgradeProvider", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "provider-upgrade.yaml"),
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "provider-upgrade.yaml", pkgv1.Healthy(), pkgv1.Active()),
 			)).
+			// Regression test for the following issues:
+			// https://github.com/crossplane/crossplane/issues/6761
+			// https://github.com/crossplane/crossplane/issues/6804
+			Assess("CRDOwnerReferencesUpdated",
+				funcs.ResourceValidatedWithin(1*time.Minute,
+					&k8sapiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "nopresources.nop.crossplane.io"}},
+					func(obj k8s.Object) bool {
+						crd := obj.(*k8sapiextensionsv1.CustomResourceDefinition)
+
+						diff := cmp.Diff(controller, metav1.GetControllerOf(crd))
+
+						// We want the controller to change.
+						if diff == "" {
+							return false
+						}
+
+						t.Logf("NopResource CRD controller reference changed:\n%v", diff)
+						return true
+					},
+				),
+			).
 			Assess("UpgradeManagedResource", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "mr-upgrade.yaml"),
 				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "mr-upgrade.yaml", xpv1.Available()),
@@ -150,7 +190,12 @@ func TestProviderUpgrade(t *testing.T) {
 			WithTeardown("DeleteUpgradedManagedResource", funcs.AllOf(
 				funcs.DeleteResources(manifests, "mr-upgrade.yaml"),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "mr-upgrade.yaml"),
-			)).WithTeardown("DeleteUpgradedProvider", funcs.ResourcesDeletedAfterListedAreGone(1*time.Minute, manifests, "provider-upgrade.yaml", nopList)).Feature(),
+			)).
+			WithTeardown("DeletePrerequisites", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider-upgrade.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider-upgrade.yaml"),
+			)).
+			Feature(),
 	)
 }
 
@@ -158,7 +203,7 @@ func TestDeploymentRuntimeConfig(t *testing.T) {
 	manifests := "test/e2e/manifests/pkg/deployment-runtime-config"
 	environment.Test(t,
 		features.NewWithDescription(t.Name(), "Tests that custom configurations in the deployment runtime do not disrupt the functionality of the resources, ensuring that deployments, services, and service accounts are created and configured correctly according to the specified runtime settings.").
-			WithLabel(LabelArea, LabelAreaAPIExtensions).
+			WithLabel(LabelArea, LabelAreaPkg).
 			WithLabel(LabelSize, LabelSizeSmall).
 			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
 			WithSetup("CreatePrerequisites", funcs.AllOf(
@@ -168,17 +213,17 @@ func TestDeploymentRuntimeConfig(t *testing.T) {
 				funcs.ResourcesHaveConditionWithin(3*time.Minute, manifests, "setup/provider.yaml", pkgv1.Healthy(), pkgv1.Active()),
 				funcs.ResourcesHaveConditionWithin(3*time.Minute, manifests, "setup/functions.yaml", pkgv1.Healthy(), pkgv1.Active()),
 			)).
-			Assess("CreateClaim", funcs.AllOf(
-				funcs.ApplyResources(FieldManager, manifests, "claim.yaml"),
-				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "claim.yaml"),
+			Assess("CreateXR", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "xr.yaml"),
+				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "xr.yaml"),
 			)).
 			// Ensure that none of the custom configurations we have made in the
 			// deployment runtime configuration are causing any disruptions to
 			// the functionality.
-			Assess("ClaimIsReady",
-				funcs.ResourcesHaveConditionWithin(5*time.Minute, manifests, "claim.yaml", xpv1.Available())).
-			Assess("ClaimHasPatchedField",
-				funcs.ResourcesHaveFieldValueWithin(5*time.Minute, manifests, "claim.yaml", "status.coolerField", "I'M COOLER!"),
+			Assess("XRIsReady",
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv1.Available())).
+			Assess("XRHasPatchedField",
+				funcs.ResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "status.coolerField", "I'M COOLER!"),
 			).
 			Assess("ServiceAccountNamedProperly",
 				funcs.ResourceCreatedWithin(10*time.Second, &corev1.ServiceAccount{
@@ -212,11 +257,14 @@ func TestDeploymentRuntimeConfig(t *testing.T) {
 				funcs.ResourceHasFieldValueWithin(10*time.Second, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "iamfreetochoose", Namespace: namespace}}, "spec.template.spec.containers[1].name", "sidecar"),
 				funcs.ResourceHasFieldValueWithin(10*time.Second, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "iamfreetochoose", Namespace: namespace}}, "spec.template.spec.volumes[0].name", "shared-volume"),
 			)).
-			WithTeardown("DeleteClaim", funcs.AllOf(
-				funcs.DeleteResources(manifests, "claim.yaml"),
-				funcs.ResourcesDeletedWithin(2*time.Minute, manifests, "claim.yaml"),
+			WithTeardown("DeleteXR", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "xr.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(2*time.Minute, manifests, "xr.yaml"),
 			)).
-			WithTeardown("DeletePrerequisites", funcs.ResourcesDeletedAfterListedAreGone(3*time.Minute, manifests, "setup/*.yaml", nopList)).
+			WithTeardown("DeletePrerequisites", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "setup/*.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(3*time.Minute, manifests, "setup/*.yaml"),
+			)).
 			Feature(),
 	)
 }
@@ -225,7 +273,7 @@ func TestExternallyManagedServiceAccount(t *testing.T) {
 	manifests := "test/e2e/manifests/pkg/externally-managed-service-account"
 	environment.Test(t,
 		features.NewWithDescription(t.Name(), "Tests that an externally managed service account is not owned by the deployment while verifying that the deployment correctly references the service account as specified in the runtime configuration.").
-			WithLabel(LabelArea, LabelAreaAPIExtensions).
+			WithLabel(LabelArea, LabelAreaPkg).
 			WithLabel(LabelSize, LabelSizeSmall).
 			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
 			WithSetup("CreatePrerequisites", funcs.AllOf(
@@ -235,17 +283,17 @@ func TestExternallyManagedServiceAccount(t *testing.T) {
 				funcs.ResourcesHaveConditionWithin(3*time.Minute, manifests, "setup/provider.yaml", pkgv1.Healthy(), pkgv1.Active()),
 				funcs.ResourcesHaveConditionWithin(3*time.Minute, manifests, "setup/functions.yaml", pkgv1.Healthy(), pkgv1.Active()),
 			)).
-			Assess("CreateClaim", funcs.AllOf(
-				funcs.ApplyResources(FieldManager, manifests, "claim.yaml"),
-				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "claim.yaml"),
+			Assess("CreateXR", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "xr.yaml"),
+				funcs.ResourcesCreatedWithin(30*time.Second, manifests, "xr.yaml"),
 			)).
 			// Ensure that none of the custom configurations we have made in the
 			// deployment runtime configuration are causing any disruptions to
 			// the functionality.
-			Assess("ClaimIsReady",
-				funcs.ResourcesHaveConditionWithin(5*time.Minute, manifests, "claim.yaml", xpv1.Available())).
-			Assess("ClaimHasPatchedField",
-				funcs.ResourcesHaveFieldValueWithin(5*time.Minute, manifests, "claim.yaml", "status.coolerField", "I'M COOLER!"),
+			Assess("XRIsReady",
+				funcs.ResourcesHaveConditionWithin(1*time.Minute, manifests, "xr.yaml", xpv1.Available())).
+			Assess("XRHasPatchedField",
+				funcs.ResourcesHaveFieldValueWithin(1*time.Minute, manifests, "xr.yaml", "status.coolerField", "I'M COOLER!"),
 			).
 			Assess("ExternalServiceAccountIsNotOwned",
 				funcs.ResourceHasFieldValueWithin(10*time.Second, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "external-sa", Namespace: namespace}}, "metadata.ownerReferences", funcs.NotFound),
@@ -253,11 +301,14 @@ func TestExternallyManagedServiceAccount(t *testing.T) {
 			Assess("DeploymentHasSpecFromDeploymentRuntimeConfig",
 				funcs.ResourceHasFieldValueWithin(10*time.Second, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "provider-runtime", Namespace: namespace}}, "spec.template.spec.serviceAccountName", "external-sa"),
 			).
-			WithTeardown("DeleteClaim", funcs.AllOf(
-				funcs.DeleteResources(manifests, "claim.yaml"),
-				funcs.ResourcesDeletedWithin(2*time.Minute, manifests, "claim.yaml"),
+			WithTeardown("DeleteXR", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "xr.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(2*time.Minute, manifests, "xr.yaml"),
 			)).
-			WithTeardown("DeletePrerequisites", funcs.ResourcesDeletedAfterListedAreGone(3*time.Minute, manifests, "setup/*.yaml", nopList)).
+			WithTeardown("DeletePrerequisites", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "setup/*.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(3*time.Minute, manifests, "setup/*.yaml"),
+			)).
 			Feature(),
 	)
 }
@@ -282,7 +333,7 @@ func TestConfigurationWithDigest(t *testing.T) {
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "lock.yaml", v1beta1.ResolutionSucceeded())). // TODO(ezgidemirel): use ResourceHasConditionWithin instead
 			// Dependencies are not automatically deleted.
 			WithTeardown("DeleteConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration.yaml"),
 				// We wait until the configuration revision is gone, otherwise
 				// the provider we will be deleting next might come back as a
@@ -290,7 +341,7 @@ func TestConfigurationWithDigest(t *testing.T) {
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-revision.yaml"),
 			)).
 			WithTeardown("DeleteRequiredProvider", funcs.AllOf(
-				funcs.DeleteResources(manifests, "provider-dependency.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider-dependency.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider-dependency.yaml"),
 			)).
 			WithTeardown("DeleteProviderRevision", funcs.AllOf(
@@ -310,7 +361,7 @@ func TestUpgradeDependencyVersion(t *testing.T) {
 		features.NewWithDescription(t.Name(), "Tests that a Configuration with a dependency on provider with version upgrades when dependency changes to another version.").
 			WithLabel(LabelArea, LabelAreaPkg).
 			WithLabel(LabelSize, LabelSizeSmall).
-			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpgrades).
+			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpdates).
 			WithSetup("ApplyConfiguration", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "configuration-initial.yaml"),
 				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "configuration-initial.yaml"),
@@ -322,7 +373,7 @@ func TestUpgradeDependencyVersion(t *testing.T) {
 			Assess("UpdateConfiguration",
 				funcs.ApplyResources(FieldManager, manifests, "configuration-updated.yaml")).
 			Assess("ProviderUpgradedToNewVersionAndHealthy", funcs.AllOf(
-				funcs.ResourceHasFieldValueWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-contrib-provider-nop"}}, "spec.package", "xpkg.upbound.io/crossplane-contrib/provider-nop:v0.2.1"),
+				funcs.ResourceHasFieldValueWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-contrib-provider-nop"}}, "spec.package", "xpkg.upbound.io/crossplane-contrib/provider-nop:v0.3.1"),
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "provider.yaml", pkgv1.Healthy(), pkgv1.Active()))).
 			Assess("ConfigurationIsStillHealthy",
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-updated.yaml", pkgv1.Healthy(), pkgv1.Active())).
@@ -330,11 +381,11 @@ func TestUpgradeDependencyVersion(t *testing.T) {
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "lock.yaml", v1beta1.ResolutionSucceeded())). // TODO(ezgidemirel): use ResourceHasConditionWithin instead
 			// Dependencies are not automatically deleted.
 			WithTeardown("DeleteConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration-updated.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-updated.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-updated.yaml"),
 			)).
 			WithTeardown("DeleteRequiredProvider", funcs.AllOf(
-				funcs.DeleteResources(manifests, "provider.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider.yaml"),
 			)).
 			WithTeardown("DeleteProviderRevision", funcs.AllOf(
@@ -354,7 +405,7 @@ func TestUpgradeDependencyDigest(t *testing.T) {
 		features.NewWithDescription(t.Name(), "Tests that a Configuration with a dependency on provider with digest upgrades when dependency changes to another digest.").
 			WithLabel(LabelArea, LabelAreaPkg).
 			WithLabel(LabelSize, LabelSizeSmall).
-			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpgrades).
+			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpdates).
 			WithSetup("ApplyConfiguration", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "configuration-initial.yaml"),
 				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "configuration-initial.yaml"),
@@ -374,11 +425,11 @@ func TestUpgradeDependencyDigest(t *testing.T) {
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "lock.yaml", v1beta1.ResolutionSucceeded())). // TODO(ezgidemirel): use ResourceHasConditionWithin instead
 			// Dependencies are not automatically deleted.
 			WithTeardown("DeleteConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration-updated.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-updated.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-updated.yaml"),
 			)).
 			WithTeardown("DeleteRequiredProvider", funcs.AllOf(
-				funcs.DeleteResources(manifests, "provider.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider.yaml"),
 			)).
 			WithTeardown("DeleteProviderRevision", funcs.AllOf(
@@ -398,7 +449,7 @@ func TestUpgradeAlreadyExistsDependency(t *testing.T) {
 		features.NewWithDescription(t.Name(), "Tests that a newly installed Configuration updates to existing dependency to the minimal valid version.").
 			WithLabel(LabelArea, LabelAreaPkg).
 			WithLabel(LabelSize, LabelSizeSmall).
-			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpgrades).
+			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpdates).
 			WithSetup("ApplyDependency", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "provider.yaml"),
 				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "provider.yaml"),
@@ -420,18 +471,18 @@ func TestUpgradeAlreadyExistsDependency(t *testing.T) {
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "lock.yaml", v1beta1.ResolutionSucceeded())). // TODO(ezgidemirel): use ResourceHasConditionWithin instead
 			// Dependencies are not automatically deleted.
 			WithTeardown("DeleteConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration.yaml"),
 			)).
 			WithTeardown("DeleteRequiredConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration-nop.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-nop.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-nop.yaml"),
 			)).
 			WithTeardown("DeleteConfigurationRevision", funcs.AllOf(
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-nop-revision.yaml"),
 			)).
 			WithTeardown("DeleteRequiredProvider", funcs.AllOf(
-				funcs.DeleteResources(manifests, "provider.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider.yaml"),
 			)).
 			WithTeardown("DeleteProviderRevision", funcs.AllOf(
@@ -451,7 +502,7 @@ func TestNoValidVersion(t *testing.T) {
 		features.NewWithDescription(t.Name(), "Tests that a Configuration will not become healthy if there is no valid version for its dependency.").
 			WithLabel(LabelArea, LabelAreaPkg).
 			WithLabel(LabelSize, LabelSizeSmall).
-			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpgrades).
+			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpdates).
 			WithSetup("ApplyConfiguration", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "configuration.yaml"),
 				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "configuration.yaml"),
@@ -459,20 +510,20 @@ func TestNoValidVersion(t *testing.T) {
 			Assess("RequiredProviderIsHealthy",
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "provider.yaml", pkgv1.Healthy(), pkgv1.Active())).
 			Assess("RequiredConfigurationIsUnhealthy",
-				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-nop.yaml", pkgv1.UnknownHealth(), pkgv1.Active())).
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-nop.yaml", pkgv1.Unhealthy(), pkgv1.Active())).
 			WithTeardown("DeleteConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration.yaml"),
 			)).
 			WithTeardown("DeleteRequiredConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration-nop.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-nop.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-nop.yaml"),
 			)).
 			WithTeardown("DeleteConfigurationRevision", funcs.AllOf(
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-nop-revision.yaml"),
 			)).
 			WithTeardown("DeleteRequiredProvider", funcs.AllOf(
-				funcs.DeleteResources(manifests, "provider.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider.yaml"),
 			)).
 			WithTeardown("DeleteProviderRevision", funcs.AllOf(
@@ -481,39 +532,42 @@ func TestNoValidVersion(t *testing.T) {
 	)
 }
 
-// TestNoDowngrade tests that a Configuration will not become healthy because automatic downgrades are not allowed.
+// TestDowngrade tests that a Configuration will become healthy after downgrading a dependency version.
 // The packages used in this test are built and pushed manually and the manifests must remain unchanged to ensure
 // the test scenario is not broken. Corresponding meta file can be found under
-// test/e2e/manifests/pkg/dependency-upgrade/no-downgrade/package folder.
-func TestNoDowngrade(t *testing.T) {
-	manifests := "test/e2e/manifests/pkg/dependency-upgrade/no-downgrade"
+// test/e2e/manifests/pkg/dependency-upgrade/downgrade/package folder.
+func TestDowngrade(t *testing.T) {
+	manifests := "test/e2e/manifests/pkg/dependency-upgrade/downgrade"
 
 	environment.Test(t,
-		features.NewWithDescription(t.Name(), "Tests that a Configuration will not become healthy and dependency version will not be downgraded even though there is a valid version.").
+		features.NewWithDescription(t.Name(), "Tests that a Configuration will become healthy after downgrading a dependency version.").
 			WithLabel(LabelArea, LabelAreaPkg).
 			WithLabel(LabelSize, LabelSizeSmall).
-			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpgrades).
+			WithLabel(config.LabelTestSuite, SuitePackageDependencyUpdates).
 			WithSetup("ApplyConfiguration", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "configuration.yaml"),
 				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "configuration.yaml"),
 			)).
 			Assess("RequiredProviderIsHealthy",
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "provider.yaml", pkgv1.Healthy(), pkgv1.Active())).
-			Assess("RequiredConfigurationIsUnhealthy",
-				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-nop.yaml", pkgv1.UnknownHealth(), pkgv1.Active())).
+			Assess("RequiredConfigurationIsHealthy",
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration-nop.yaml", pkgv1.Healthy(), pkgv1.Active())).
+			Assess("ProviderDowngradedToNewVersionAndHealthy", funcs.AllOf(
+				funcs.ResourceHasFieldValueWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "crossplane-contrib-provider-nop"}}, "spec.package", "xpkg.upbound.io/crossplane-contrib/provider-nop:v0.3.1"),
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "provider.yaml", pkgv1.Healthy(), pkgv1.Active()))).
 			WithTeardown("DeleteConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration.yaml"),
 			)).
 			WithTeardown("DeleteRequiredConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration-nop.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-nop.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-nop.yaml"),
 			)).
 			WithTeardown("DeleteConfigurationRevision", funcs.AllOf(
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-nop-revision.yaml"),
 			)).
 			WithTeardown("DeleteRequiredProvider", funcs.AllOf(
-				funcs.DeleteResources(manifests, "provider.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider.yaml"),
 			)).
 			WithTeardown("DeleteProviderRevision", funcs.AllOf(
@@ -548,7 +602,7 @@ func TestImageConfigAuth(t *testing.T) {
 				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration.yaml", pkgv1.Healthy(), pkgv1.Active()),
 			)).
 			WithTeardown("DeleteConfiguration", funcs.AllOf(
-				funcs.DeleteResources(manifests, "configuration.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration.yaml"),
 				// We wait until the configuration revision is gone, otherwise
 				// the provider we will be deleting next might come back as a
@@ -557,7 +611,7 @@ func TestImageConfigAuth(t *testing.T) {
 			)).
 			// Dependencies are not automatically deleted.
 			WithTeardown("DeleteProvider", funcs.AllOf(
-				funcs.DeleteResources(manifests, "provider.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider.yaml"),
 				// Provider is a copy of provider-nop, so waiting until nop
 				// CRD is gone is sufficient to ensure the provider completely
@@ -592,12 +646,12 @@ func TestImageConfigVerificationWithKey(t *testing.T) {
 			)).
 			Assess("SignatureVerificationSucceeded", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "configuration-signed.yaml"),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ConfigurationRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-configuration-signed-with-key-1765fb139d01"}}, pkgv1.Healthy(), pkgv1.VerificationSucceeded("").WithMessage("")),
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ConfigurationRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-configuration-signed-with-key-1765fb139d01"}}, pkgv1.RevisionHealthy(), pkgv1.VerificationSucceeded("").WithMessage("")),
 				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Configuration{ObjectMeta: metav1.ObjectMeta{Name: "e2e-configuration-signed-with-key"}}, pkgv1.Active(), pkgv1.Healthy()),
 			)).
 			WithTeardown("DeletePackageAndImageConfig", funcs.AllOf(
 				funcs.DeleteResources(manifests, "image-config.yaml"),
-				funcs.DeleteResources(manifests, "configuration-signed.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration-signed.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration-signed.yaml"),
 			)).Feature(),
 	)
@@ -628,12 +682,12 @@ func TestImageConfigVerificationKeyless(t *testing.T) {
 			)).
 			Assess("SignatureVerificationSucceeded", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "provider-signed.yaml"),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-provider-signed-keyless-37f3300ebfa7"}}, pkgv1.Healthy(), pkgv1.VerificationSucceeded("").WithMessage("")),
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-provider-signed-keyless-37f3300ebfa7"}}, pkgv1.RevisionHealthy(), pkgv1.VerificationSucceeded("").WithMessage("")),
 				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-provider-signed-keyless"}}, pkgv1.Active(), pkgv1.Healthy()),
 			)).
 			WithTeardown("DeletePackageAndImageConfig", funcs.AllOf(
 				funcs.DeleteResources(manifests, "image-config.yaml"),
-				funcs.DeleteResources(manifests, "provider-signed.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider-signed.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider-signed.yaml"),
 				// Providers are a copy of provider-nop, so waiting until nop
 				// CRD is gone is sufficient to ensure the provider completely
@@ -669,16 +723,69 @@ func TestImageConfigAttestationVerificationPrivateKeyless(t *testing.T) {
 			)).
 			Assess("SignatureVerificationSucceeded", funcs.AllOf(
 				funcs.ApplyResources(FieldManager, manifests, "provider-signed.yaml"),
-				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless-37f3300ebfa7"}}, pkgv1.Healthy(), pkgv1.VerificationSucceeded("").WithMessage("")),
+				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.ProviderRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless-37f3300ebfa7"}}, pkgv1.RevisionHealthy(), pkgv1.VerificationSucceeded("").WithMessage("")),
 				funcs.ResourceHasConditionWithin(2*time.Minute, &pkgv1.Provider{ObjectMeta: metav1.ObjectMeta{Name: "e2e-private-provider-signed-keyless"}}, pkgv1.Active(), pkgv1.Healthy()),
 			)).
 			WithTeardown("DeletePackageAndImageConfig", funcs.AllOf(
 				funcs.DeleteResources(manifests, "image-config.yaml"),
-				funcs.DeleteResources(manifests, "provider-signed.yaml"),
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider-signed.yaml", metav1.DeletePropagationForeground),
 				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider-signed.yaml"),
 				// Providers are a copy of provider-nop, so waiting until nop
 				// CRD is gone is sufficient to ensure the provider completely
 				// deleted including all revisions.
+				funcs.ResourceDeletedWithin(2*time.Minute, &k8sapiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "nopresources.nop.crossplane.io"}}),
+			)).Feature(),
+	)
+}
+
+// TestImageConfigRewrite tests that we can install a package and its
+// dependencies from an alternative registry by rewriting image paths with the
+// ImageConfig API.
+//
+// The packages used in this test are built and pushed manually and the
+// manifests must remain unchanged to ensure the test scenario is not
+// broken. Corresponding meta file can be found at
+// test/e2e/manifests/pkg/image-config/rewrite/package.
+func TestImageConfigRewrite(t *testing.T) {
+	manifests := "test/e2e/manifests/pkg/image-config/rewrite"
+
+	environment.Test(t,
+		features.NewWithDescription(t.Name(), "Tests that we can install a package and its dependencies from an alternative registry by rewriting image paths with the ImageConfig API.").
+			WithLabel(LabelArea, LabelAreaPkg).
+			WithLabel(LabelSize, LabelSizeSmall).
+			WithLabel(config.LabelTestSuite, config.TestSuiteDefault).
+			WithSetup("ApplyImageConfig", funcs.AllOf(
+				funcs.ApplyResources(FieldManager, manifests, "image-config.yaml"),
+				funcs.ApplyResources(FieldManager, manifests, "configuration.yaml"),
+				funcs.ResourcesCreatedWithin(1*time.Minute, manifests, "configuration.yaml"),
+			)).
+			Assess("ProviderInstalledAndHealthy", funcs.AllOf(
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "provider.yaml", pkgv1.Healthy(), pkgv1.Active()),
+				funcs.ResourcesHaveFieldValueWithin(2*time.Minute, manifests, "provider.yaml", "status.resolvedPackage", "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.4.0"),
+				funcs.ResourcesHaveFieldValueWithin(2*time.Minute, manifests, "provider.yaml", "status.appliedImageConfigRefs[0].name", "e2e-rewrite"),
+				funcs.ResourcesHaveFieldValueWithin(2*time.Minute, manifests, "provider.yaml", "status.appliedImageConfigRefs[0].reason", string(pkgv1.ImageConfigReasonRewrite)),
+			)).
+			Assess("ConfigurationInstalledAndHealthy", funcs.AllOf(
+				funcs.ResourcesHaveConditionWithin(2*time.Minute, manifests, "configuration.yaml", pkgv1.Healthy(), pkgv1.Active()),
+				funcs.ResourcesHaveFieldValueWithin(2*time.Minute, manifests, "configuration.yaml", "status.resolvedPackage", "xpkg.crossplane.io/crossplane/e2e-rewrite:v0.1.0"),
+				funcs.ResourcesHaveFieldValueWithin(2*time.Minute, manifests, "configuration.yaml", "status.appliedImageConfigRefs[0].name", "e2e-rewrite"),
+				funcs.ResourcesHaveFieldValueWithin(2*time.Minute, manifests, "configuration.yaml", "status.appliedImageConfigRefs[0].reason", string(pkgv1.ImageConfigReasonRewrite)),
+			)).
+			WithTeardown("DeleteConfiguration", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "configuration.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "configuration.yaml"),
+				// We wait until the configuration revision is gone, otherwise
+				// the provider we will be deleting next might come back as a
+				// result of the configuration revision being reconciled again.
+				funcs.ResourceDeletedWithin(1*time.Minute, &pkgv1.ConfigurationRevision{ObjectMeta: metav1.ObjectMeta{Name: "e2e-rewrite-8c444e8bcd1e"}}),
+			)).
+			// Dependencies are not automatically deleted.
+			WithTeardown("DeleteProvider", funcs.AllOf(
+				funcs.DeleteResourcesWithPropagationPolicy(manifests, "provider.yaml", metav1.DeletePropagationForeground),
+				funcs.ResourcesDeletedWithin(1*time.Minute, manifests, "provider.yaml"),
+				// Provider is provider-nop, so waiting until nop CRD is gone is
+				// sufficient to ensure the provider completely deleted
+				// including all revisions.
 				funcs.ResourceDeletedWithin(2*time.Minute, &k8sapiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "nopresources.nop.crossplane.io"}}),
 			)).Feature(),
 	)

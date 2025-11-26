@@ -21,17 +21,6 @@ import (
 	"fmt"
 
 	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-)
-
-// Error strings.
-const (
-	errGetClusterRole           = "cannot get ClusterRole"
-	errExpandClusterRoleRules   = "cannot expand ClusterRole rules"
-	errExpandPermissionRequests = "cannot expand PermissionRequests"
 )
 
 const (
@@ -67,6 +56,7 @@ func (n *node) Allow(p path) {
 	if _, ok := n.children[k]; !ok {
 		n.children[k] = newNode()
 	}
+
 	n.children[k].Allow(p[1:])
 }
 
@@ -84,11 +74,13 @@ func (n *node) Allowed(p path) bool {
 			if c.allowed {
 				return true
 			}
+
 			if c.Allowed(p[1:]) {
 				return true
 			}
 		}
 	}
+
 	return false
 }
 
@@ -116,6 +108,7 @@ func (r Rule) String() string {
 	if r.NonResourceURL != "" {
 		return fmt.Sprintf("{nonResourceURL: %q, verb: %q}", r.NonResourceURL, r.Verb)
 	}
+
 	return fmt.Sprintf("{apiGroup: %q, resource: %q, resourceName: %q, verb: %q}", r.APIGroup, r.Resource, r.ResourceName, r.Verb)
 }
 
@@ -124,6 +117,7 @@ func (r Rule) path() path {
 	if r.NonResourceURL != "" {
 		return path{pathPrefixURL, r.NonResourceURL, r.Verb}
 	}
+
 	return path{pathPrefixResource, r.APIGroup, r.Resource, r.ResourceName, r.Verb}
 }
 
@@ -139,6 +133,7 @@ func Expand(ctx context.Context, rs ...rbacv1.PolicyRule) ([]Rule, error) { //no
 					return nil, ctx.Err()
 				default:
 				}
+
 				out = append(out, Rule{NonResourceURL: u, Verb: v})
 			}
 		}
@@ -160,61 +155,13 @@ func Expand(ctx context.Context, rs ...rbacv1.PolicyRule) ([]Rule, error) { //no
 							return nil, ctx.Err()
 						default:
 						}
+
 						out = append(out, Rule{APIGroup: g, Resource: rsc, ResourceName: n, Verb: v})
 					}
 				}
 			}
 		}
 	}
+
 	return out, nil
-}
-
-// A ClusterRoleBackedValidator is a PermissionRequestsValidator that validates
-// permission requests by comparing them to an RBAC ClusterRole. The validator
-// will reject any permission that is not permitted by the ClusterRole.
-type ClusterRoleBackedValidator struct {
-	client client.Client
-	name   string
-}
-
-// NewClusterRoleBackedValidator creates a ClusterRoleBackedValidator backed by
-// the named RBAC ClusterRole.
-func NewClusterRoleBackedValidator(c client.Client, roleName string) *ClusterRoleBackedValidator {
-	return &ClusterRoleBackedValidator{client: c, name: roleName}
-}
-
-// ValidatePermissionRequests against the ClusterRole, returning the list of rejected rules.
-func (v *ClusterRoleBackedValidator) ValidatePermissionRequests(ctx context.Context, requests ...rbacv1.PolicyRule) ([]Rule, error) {
-	cr := &rbacv1.ClusterRole{}
-	if err := v.client.Get(ctx, types.NamespacedName{Name: v.name}, cr); err != nil {
-		return nil, errors.Wrap(err, errGetClusterRole)
-	}
-
-	t := newNode()
-	expandedCrRules, err := Expand(ctx, cr.Rules...)
-	if err != nil {
-		return nil, errors.Wrap(err, errExpandClusterRoleRules)
-	}
-	for _, rule := range expandedCrRules {
-		t.Allow(rule.path())
-	}
-
-	rejected := make([]Rule, 0)
-	expandedRequests, err := Expand(ctx, requests...)
-	if err != nil {
-		return nil, errors.Wrap(err, errExpandPermissionRequests)
-	}
-	for _, rule := range expandedRequests {
-		if !t.Allowed(rule.path()) {
-			rejected = append(rejected, rule)
-		}
-	}
-
-	return rejected, nil
-}
-
-// VerySecureValidator is a PermissionRequestsValidatorFn that rejects all
-// requested permissions.
-func VerySecureValidator(ctx context.Context, requests ...rbacv1.PolicyRule) ([]Rule, error) {
-	return Expand(ctx, requests...)
 }

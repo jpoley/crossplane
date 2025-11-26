@@ -20,18 +20,19 @@ import (
 	"fmt"
 	"io"
 
+	regv1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/spf13/afero"
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/yaml"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/fieldpath"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
 
-	v1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
-	metav1 "github.com/crossplane/crossplane/apis/pkg/meta/v1"
-	"github.com/crossplane/crossplane/internal/xcrd"
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	metav1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
+	"github.com/crossplane/crossplane/v2/internal/xcrd"
 )
 
 const (
@@ -62,6 +63,7 @@ func WithCrossplaneImage(image string) Option {
 		if image == "" {
 			return
 		}
+
 		m.deps[image] = true
 	}
 }
@@ -94,6 +96,7 @@ func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error 
 		switch e.GroupVersionKind().GroupKind() {
 		case schema.GroupKind{Group: "apiextensions.k8s.io", Kind: "CustomResourceDefinition"}:
 			crd := &extv1.CustomResourceDefinition{}
+
 			bytes, err := e.MarshalJSON()
 			if err != nil {
 				return errors.Wrap(err, "cannot marshal CRD to JSON")
@@ -107,6 +110,7 @@ func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error 
 
 		case schema.GroupKind{Group: "apiextensions.crossplane.io", Kind: "CompositeResourceDefinition"}:
 			xrd := &v1.CompositeResourceDefinition{}
+
 			bytes, err := e.MarshalJSON()
 			if err != nil {
 				return errors.Wrap(err, "cannot marshal XRD to JSON")
@@ -120,6 +124,7 @@ func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error 
 			if err != nil {
 				return errors.Wrapf(err, "cannot derive composite CRD from XRD %q", xrd.GetName())
 			}
+
 			m.crds = append(m.crds, crd)
 
 			if xrd.Spec.ClaimNames != nil {
@@ -133,6 +138,7 @@ func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error 
 
 		case schema.GroupKind{Group: "pkg.crossplane.io", Kind: "Provider"}:
 			paved := fieldpath.Pave(e.Object)
+
 			image, err := paved.GetString("spec.package")
 			if err != nil {
 				return errors.Wrapf(err, "cannot get provider package image")
@@ -142,6 +148,7 @@ func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error 
 
 		case schema.GroupKind{Group: "pkg.crossplane.io", Kind: "Function"}:
 			paved := fieldpath.Pave(e.Object)
+
 			image, err := paved.GetString("spec.package")
 			if err != nil {
 				return errors.Wrapf(err, "cannot get function package image")
@@ -151,6 +158,7 @@ func (m *Manager) PrepExtensions(extensions []*unstructured.Unstructured) error 
 
 		case schema.GroupKind{Group: "pkg.crossplane.io", Kind: "Configuration"}:
 			paved := fieldpath.Pave(e.Object)
+
 			image, err := paved.GetString("spec.package")
 			if err != nil {
 				return errors.Wrapf(err, "cannot get package image")
@@ -199,7 +207,7 @@ func (m *Manager) CacheAndLoad(cleanCache bool) error {
 		return errors.Wrapf(err, "cannot cache package dependencies")
 	}
 
-	schemas, err := m.cache.Load()
+	schemas, err := m.loadDependencies()
 	if err != nil {
 		return errors.Wrapf(err, "cannot load cache")
 	}
@@ -207,12 +215,13 @@ func (m *Manager) CacheAndLoad(cleanCache bool) error {
 	return m.PrepExtensions(schemas)
 }
 
-func (m *Manager) addDependencies(confs map[string]*metav1.Configuration) error {
+func (m *Manager) addDependencies(confs map[string]*metav1.Configuration) error { //nolint:gocognit // no extra func
 	if len(confs) == 0 {
 		return nil
 	}
 
 	deepConfs := make(map[string]*metav1.Configuration)
+
 	for image := range confs {
 		cfg := m.confs[image]
 
@@ -228,24 +237,38 @@ func (m *Manager) addDependencies(confs map[string]*metav1.Configuration) error 
 			if err != nil {
 				return errors.Wrapf(err, "cannot extract package file and meta")
 			}
+
 			if err := yaml.Unmarshal(meta, &cfg); err != nil {
 				return errors.Wrapf(err, "cannot unmarshal configuration YAML")
 			}
+
 			m.confs[image] = cfg // update the configuration
 		}
 
-		deps := cfg.Spec.MetaSpec.DependsOn
+		deps := cfg.Spec.DependsOn
 		for _, dep := range deps {
 			image := ""
-			if dep.Configuration != nil { //nolint:gocritic // switch is not suitable here
+
+			switch {
+			case dep.Package != nil:
+				image = *dep.Package
+			case dep.Configuration != nil:
 				image = *dep.Configuration
-			} else if dep.Provider != nil {
+			case dep.Provider != nil:
 				image = *dep.Provider
-			} else if dep.Function != nil {
+			case dep.Function != nil:
 				image = *dep.Function
 			}
+
 			if len(image) > 0 {
-				image = fmt.Sprintf(imageFmt, image, dep.Version)
+				if _, err := regv1.NewHash(dep.Version); err == nil {
+					// digest
+					image = fmt.Sprintf(refFmt, image, dep.Version)
+				} else {
+					// tag
+					image = fmt.Sprintf(imageFmt, image, dep.Version)
+				}
+
 				m.deps[image] = true
 
 				if _, ok := m.confs[image]; !ok && dep.Configuration != nil {
@@ -261,7 +284,7 @@ func (m *Manager) addDependencies(confs map[string]*metav1.Configuration) error 
 
 func (m *Manager) cacheDependencies() error {
 	if err := m.cache.Init(); err != nil {
-		return errors.Wrapf(err, "cannot initialize  cache directory")
+		return errors.Wrapf(err, "cannot initialize cache directory")
 	}
 
 	for image := range m.deps {
@@ -288,6 +311,7 @@ func (m *Manager) cacheDependencies() error {
 			if err != nil {
 				return errors.Wrapf(err, "cannot extract crds")
 			}
+
 			schemas, err = extractPackageCRDs(layers)
 			if err != nil {
 				return errors.Wrapf(err, "cannot find crds")
@@ -307,4 +331,19 @@ func (m *Manager) cacheDependencies() error {
 	}
 
 	return nil
+}
+
+func (m *Manager) loadDependencies() ([]*unstructured.Unstructured, error) {
+	schemas := make([]*unstructured.Unstructured, 0)
+
+	for dep := range m.deps {
+		cachedSchema, err := m.cache.Load(dep)
+		if err != nil {
+			return nil, errors.Wrapf(err, "cannot load cache for %s", dep)
+		}
+
+		schemas = append(schemas, cachedSchema...)
+	}
+
+	return schemas, nil
 }

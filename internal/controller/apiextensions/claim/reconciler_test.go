@@ -30,15 +30,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/claim"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/composite"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/reference"
-	"github.com/crossplane/crossplane-runtime/pkg/test"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/claim"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/reference"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 )
 
 func TestReconcile(t *testing.T) {
@@ -47,10 +46,11 @@ func TestReconcile(t *testing.T) {
 
 	type args struct {
 		client client.Client
-		of     resource.CompositeClaimKind
-		with   resource.CompositeKind
+		of     schema.GroupVersionKind
+		with   schema.GroupVersionKind
 		opts   []ReconcilerOption
 	}
+
 	type want struct {
 		r   reconcile.Result
 		err error
@@ -65,7 +65,8 @@ func TestReconcile(t *testing.T) {
 			reason: "We should not return an error if the composite resource was not found.",
 			args: args{
 				client: &test.MockClient{
-					MockGet: test.NewMockGetFn(kerrors.NewNotFound(schema.GroupResource{}, "")),
+					MockGet:  test.NewMockGetFn(kerrors.NewNotFound(schema.GroupResource{}, "")),
+					MockList: test.NewMockListFn(nil),
 				},
 			},
 			want: want{
@@ -76,12 +77,13 @@ func TestReconcile(t *testing.T) {
 			reason: "We should return any error we encounter getting the claim.",
 			args: args{
 				client: &test.MockClient{
-					MockGet: test.NewMockGetFn(errBoom),
+					MockGet:  test.NewMockGetFn(errBoom),
+					MockList: test.NewMockListFn(nil),
 				},
 			},
 			want: want{
 				r:   reconcile.Result{},
-				err: errors.Wrap(errBoom, errGetClaim),
+				err: cmpopts.AnyError,
 			},
 		},
 		"ReconciliationPaused": {
@@ -92,6 +94,7 @@ func TestReconcile(t *testing.T) {
 						obj.(*claim.Unstructured).SetAnnotations(map[string]string{meta.AnnotationKeyReconciliationPaused: "true"})
 						return nil
 					}),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
 						cm.SetAnnotations(map[string]string{meta.AnnotationKeyReconciliationPaused: "true"})
@@ -112,6 +115,7 @@ func TestReconcile(t *testing.T) {
 						obj.(*claim.Unstructured).SetConditions(xpv1.ReconcilePaused().WithMessage(reconcilePausedMsg))
 						return nil
 					}),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that our synced status condition changed
 						// from Paused to ReconcileSuccess.
@@ -123,8 +127,8 @@ func TestReconcile(t *testing.T) {
 					WithClaimFinalizer(resource.FinalizerFns{
 						AddFinalizerFn: func(_ context.Context, _ resource.Object) error { return nil },
 					}),
-					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured) error { return nil })),
-					WithConnectionPropagator(ConnectionPropagatorFn(func(_ context.Context, _ resource.LocalConnectionSecretOwner, _ resource.ConnectionSecretOwner) (propagated bool, err error) {
+					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured, _ bool) error { return nil })),
+					WithConnectionPropagator(ConnectionPropagatorFn(func(_ context.Context, _ LocalConnectionSecretOwner, _ ConnectionSecretOwner) (propagated bool, err error) {
 						return true, nil
 					})),
 				},
@@ -149,6 +153,7 @@ func TestReconcile(t *testing.T) {
 						}
 						return nil
 					}),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
 						cm.SetResourceReference(&reference.Composite{Name: "cool-composite"})
@@ -157,11 +162,12 @@ func TestReconcile(t *testing.T) {
 				},
 			},
 			want: want{
-				r: reconcile.Result{Requeue: true},
+				r:   reconcile.Result{},
+				err: cmpopts.AnyError,
 			},
 		},
 		"CompositeAlreadyBoundError": {
-			reason: "The reconcile should fail if the referenced XR is bound to another claim",
+			reason: "The reconcile should not return an error if the referenced XR is bound to another claim",
 			args: args{
 				client: &test.MockClient{
 					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
@@ -178,6 +184,7 @@ func TestReconcile(t *testing.T) {
 						}
 						return nil
 					}),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
 						cm.SetResourceReference(&reference.Composite{Name: "cool-composite"})
@@ -206,6 +213,7 @@ func TestReconcile(t *testing.T) {
 						}
 						return nil
 					}),
+					MockList:   test.NewMockListFn(nil),
 					MockDelete: test.NewMockDeleteFn(errBoom),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
@@ -222,33 +230,8 @@ func TestReconcile(t *testing.T) {
 				},
 			},
 			want: want{
-				r: reconcile.Result{Requeue: true},
-			},
-		},
-		"UnpublishConnectionDetailsError": {
-			reason: "The reconcile should fail if we can't unpublish the claim's connection details.",
-			args: args{
-				client: &test.MockClient{
-					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
-						obj.(*claim.Unstructured).SetDeletionTimestamp(&now)
-						return nil
-					}),
-					MockDelete: test.NewMockDeleteFn(nil),
-					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
-						// Check that we set our status condition.
-						cm.SetDeletionTimestamp(&now)
-						cm.SetConditions(xpv1.Deleting())
-						cm.SetConditions(xpv1.ReconcileError(errors.Wrap(errBoom, errDeleteCDs)))
-					})),
-				},
-				opts: []ReconcilerOption{
-					WithConnectionUnpublisher(ConnectionUnpublisherFn(func(_ context.Context, _ resource.LocalConnectionSecretOwner, _ managed.ConnectionDetails) error {
-						return errBoom
-					})),
-				},
-			},
-			want: want{
-				r: reconcile.Result{Requeue: true},
+				r:   reconcile.Result{},
+				err: cmpopts.AnyError,
 			},
 		},
 		"RemoveFinalizerError": {
@@ -259,6 +242,7 @@ func TestReconcile(t *testing.T) {
 						obj.(*claim.Unstructured).SetDeletionTimestamp(&now)
 						return nil
 					}),
+					MockList:   test.NewMockListFn(nil),
 					MockDelete: test.NewMockDeleteFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
@@ -274,7 +258,8 @@ func TestReconcile(t *testing.T) {
 				},
 			},
 			want: want{
-				r: reconcile.Result{Requeue: true},
+				r:   reconcile.Result{},
+				err: cmpopts.AnyError,
 			},
 		},
 		"SuccessfulDelete": {
@@ -285,6 +270,7 @@ func TestReconcile(t *testing.T) {
 						obj.(*claim.Unstructured).SetDeletionTimestamp(&now)
 						return nil
 					}),
+					MockList:   test.NewMockListFn(nil),
 					MockDelete: test.NewMockDeleteFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
@@ -324,6 +310,7 @@ func TestReconcile(t *testing.T) {
 						}
 						return nil
 					}),
+					MockList:   test.NewMockListFn(nil),
 					MockDelete: test.NewMockDeleteFn(nil),
 				},
 				opts: []ReconcilerOption{
@@ -359,6 +346,7 @@ func TestReconcile(t *testing.T) {
 						}
 						return nil
 					}),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						cm.SetResourceReference(&reference.Composite{Name: "cool-composite"})
 						// We want to foreground delete.
@@ -384,7 +372,8 @@ func TestReconcile(t *testing.T) {
 			reason: "We should fail the reconcile if we can't add the claim's finalizer",
 			args: args{
 				client: &test.MockClient{
-					MockGet: test.NewMockGetFn(nil),
+					MockGet:  test.NewMockGetFn(nil),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
 						cm.SetConditions(xpv1.ReconcileError(errors.Wrap(errBoom, errAddFinalizer)))
@@ -397,14 +386,16 @@ func TestReconcile(t *testing.T) {
 				},
 			},
 			want: want{
-				r: reconcile.Result{Requeue: true},
+				r:   reconcile.Result{},
+				err: cmpopts.AnyError,
 			},
 		},
 		"SyncCompositeError": {
 			reason: "We should fail the reconcile if we can't bind and sync the claim with a composite resource",
 			args: args{
 				client: &test.MockClient{
-					MockGet: test.NewMockGetFn(nil),
+					MockGet:  test.NewMockGetFn(nil),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
 						cm.SetConditions(xpv1.ReconcileError(errors.Wrap(errBoom, errSync)))
@@ -414,11 +405,14 @@ func TestReconcile(t *testing.T) {
 					WithClaimFinalizer(resource.FinalizerFns{
 						AddFinalizerFn: func(_ context.Context, _ resource.Object) error { return nil },
 					}),
-					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured) error { return errBoom })),
+					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured, _ bool) error {
+						return errBoom
+					})),
 				},
 			},
 			want: want{
-				r: reconcile.Result{Requeue: true},
+				r:   reconcile.Result{},
+				err: cmpopts.AnyError,
 			},
 		},
 		"CompositeNotReady": {
@@ -440,6 +434,7 @@ func TestReconcile(t *testing.T) {
 						}
 						return nil
 					}),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
 						cm.SetResourceReference(&reference.Composite{Name: "cool-composite"})
@@ -451,7 +446,7 @@ func TestReconcile(t *testing.T) {
 					WithClaimFinalizer(resource.FinalizerFns{
 						AddFinalizerFn: func(_ context.Context, _ resource.Object) error { return nil },
 					}),
-					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured) error { return nil })),
+					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured, _ bool) error { return nil })),
 				},
 			},
 			want: want{
@@ -476,6 +471,7 @@ func TestReconcile(t *testing.T) {
 						}
 						return nil
 					}),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
 						cm.SetResourceReference(&reference.Composite{Name: "cool-composite"})
@@ -486,14 +482,15 @@ func TestReconcile(t *testing.T) {
 					WithClaimFinalizer(resource.FinalizerFns{
 						AddFinalizerFn: func(_ context.Context, _ resource.Object) error { return nil },
 					}),
-					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured) error { return nil })),
-					WithConnectionPropagator(ConnectionPropagatorFn(func(_ context.Context, _ resource.LocalConnectionSecretOwner, _ resource.ConnectionSecretOwner) (propagated bool, err error) {
+					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured, _ bool) error { return nil })),
+					WithConnectionPropagator(ConnectionPropagatorFn(func(_ context.Context, _ LocalConnectionSecretOwner, _ ConnectionSecretOwner) (propagated bool, err error) {
 						return false, errBoom
 					})),
 				},
 			},
 			want: want{
-				r: reconcile.Result{Requeue: true},
+				r:   reconcile.Result{},
+				err: cmpopts.AnyError,
 			},
 		},
 		"SuccessfulReconcile": {
@@ -514,6 +511,7 @@ func TestReconcile(t *testing.T) {
 						}
 						return nil
 					}),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
 						cm.SetResourceReference(&reference.Composite{Name: "cool-composite"})
@@ -526,8 +524,8 @@ func TestReconcile(t *testing.T) {
 					WithClaimFinalizer(resource.FinalizerFns{
 						AddFinalizerFn: func(_ context.Context, _ resource.Object) error { return nil },
 					}),
-					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured) error { return nil })),
-					WithConnectionPropagator(ConnectionPropagatorFn(func(_ context.Context, _ resource.LocalConnectionSecretOwner, _ resource.ConnectionSecretOwner) (propagated bool, err error) {
+					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured, _ bool) error { return nil })),
+					WithConnectionPropagator(ConnectionPropagatorFn(func(_ context.Context, _ LocalConnectionSecretOwner, _ ConnectionSecretOwner) (propagated bool, err error) {
 						return true, nil
 					})),
 				},
@@ -587,6 +585,7 @@ func TestReconcile(t *testing.T) {
 						}
 						return nil
 					}),
+					MockList: test.NewMockListFn(nil),
 					MockStatusUpdate: WantClaim(t, NewClaim(func(cm *claim.Unstructured) {
 						// Check that we set our status condition.
 						cm.SetResourceReference(&reference.Composite{Name: "cool-composite"})
@@ -613,8 +612,8 @@ func TestReconcile(t *testing.T) {
 					WithClaimFinalizer(resource.FinalizerFns{
 						AddFinalizerFn: func(_ context.Context, _ resource.Object) error { return nil },
 					}),
-					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured) error { return nil })),
-					WithConnectionPropagator(ConnectionPropagatorFn(func(_ context.Context, _ resource.LocalConnectionSecretOwner, _ resource.ConnectionSecretOwner) (propagated bool, err error) {
+					WithCompositeSyncer(CompositeSyncerFn(func(_ context.Context, _ *claim.Unstructured, _ *composite.Unstructured, _ bool) error { return nil })),
+					WithConnectionPropagator(ConnectionPropagatorFn(func(_ context.Context, _ LocalConnectionSecretOwner, _ ConnectionSecretOwner) (propagated bool, err error) {
 						return true, nil
 					})),
 				},
@@ -630,9 +629,10 @@ func TestReconcile(t *testing.T) {
 			r := NewReconciler(tc.args.client, tc.args.of, tc.args.with, tc.args.opts...)
 
 			got, err := r.Reconcile(context.Background(), reconcile.Request{})
-			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nr.Reconcile(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.r, got, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nr.Reconcile(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -647,12 +647,14 @@ func NewClaim(m ...ClaimModifier) *claim.Unstructured {
 	for _, fn := range m {
 		fn(cm)
 	}
+
 	return cm
 }
 
 // A status update function that ensures the supplied object is the claim we want.
 func WantClaim(t *testing.T, want *claim.Unstructured) func(_ context.Context, obj client.Object, _ ...client.SubResourceUpdateOption) error {
 	t.Helper()
+
 	return func(_ context.Context, got client.Object, _ ...client.SubResourceUpdateOption) error {
 		t.Helper()
 		// Normally we use a custom Equal method on conditions to ignore the
@@ -663,11 +665,13 @@ func WantClaim(t *testing.T, want *claim.Unstructured) func(_ context.Context, o
 			if err != nil {
 				return s
 			}
+
 			return ts
 		}), cmpopts.EquateApproxTime(3*time.Second))
 		if diff != "" {
 			t.Errorf("WantClaim(...): -want, +got: %s", diff)
 		}
+
 		return nil
 	}
 }

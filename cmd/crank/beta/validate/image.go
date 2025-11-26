@@ -28,10 +28,13 @@ import (
 
 	"github.com/Masterminds/semver"
 	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/name"
 	conregv1 "github.com/google/go-containerregistry/pkg/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/load"
 )
 
 const maxDecompressedSize = 200 * 1024 * 1024 // 200 MB
@@ -95,6 +98,13 @@ func (f *Fetcher) FetchBaseLayer(image string) (*conregv1.Layer, error) {
 		return nil, errors.Wrap(err, "failed to prepare image reference")
 	}
 
+	ref, err := name.ParseReference(image)
+	if err != nil {
+		return nil, errors.Wrapf(err, "invalid image reference: %s", image)
+	}
+
+	repoName := ref.Context().Name()
+
 	cBytes, err := crane.Config(image)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot get config")
@@ -111,19 +121,21 @@ func (f *Fetcher) FetchBaseLayer(image string) (*conregv1.Layer, error) {
 	}
 
 	var label string
+
 	ls := cfg.Config.Labels
 	for v, k := range ls {
 		if k == baseLayerLabel {
 			label = v // e.g.: io.crossplane.xpkg:sha256:0158764f65dc2a68728fdffa6ee6f2c9ef158f2dfed35abbd4f5bef8973e4b59
 		}
 	}
+
 	if label == "" {
 		return nil, NewBaseLayerNotFoundError(image)
 	}
 
 	lDigest := strings.SplitN(label, ":", 2)[1] // e.g.: sha256:0158764f65dc2a68728fdffa6ee6f2c9ef158f2dfed35abbd4f5bef8973e4b59
 
-	ll, err := crane.PullLayer(fmt.Sprintf(refFmt, image, lDigest))
+	ll, err := crane.PullLayer(fmt.Sprintf(refFmt, repoName, lDigest))
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot pull base layer %s", lDigest)
 	}
@@ -140,6 +152,7 @@ func findImageTagForVersionConstraint(image string) (string, error) {
 
 	// Check if the tag is a constraint
 	isConstraint := true
+
 	c, err := semver.NewConstraint(imageTag)
 	if err != nil {
 		isConstraint = false
@@ -164,12 +177,15 @@ func findImageTagForVersionConstraint(image string) (string, error) {
 			// We skip any tags that are not valid semantic versions
 			continue
 		}
+
 		vs = append(vs, v)
 	}
 
 	// Sort all versions and find the last version complient with the constraint
 	sort.Sort(sort.Reverse(semver.Collection(vs)))
+
 	var addVer string
+
 	for _, v := range vs {
 		if c.Check(v) {
 			addVer = v.Original()
@@ -194,7 +210,7 @@ func extractPackageContent(layer conregv1.Layer) ([][]byte, []byte, error) {
 		return nil, nil, errors.Wrapf(err, "cannot get uncompressed layer")
 	}
 
-	objs, err := load(rc)
+	objs, err := load.YamlStream(rc)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "cannot read from layer")
 	}
@@ -220,6 +236,7 @@ func extractPackageCRDs(layers []conregv1.Layer) ([][]byte, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create temporary directory")
 	}
+
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
 			log.Printf("Failed to remove temporary directory: %v", err)
@@ -234,6 +251,7 @@ func extractPackageCRDs(layers []conregv1.Layer) ([][]byte, error) {
 
 	// Search for .yaml files in the "crds" directory
 	var yamlFiles [][]byte
+
 	err = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -245,6 +263,7 @@ func extractPackageCRDs(layers []conregv1.Layer) ([][]byte, error) {
 			if err != nil {
 				return errors.Wrapf(err, "failed to read file: %s", path)
 			}
+
 			yamlFiles = append(yamlFiles, content)
 		}
 
@@ -263,6 +282,7 @@ func extractLayer(layer conregv1.Layer, destDir string) error { //nolint:gocogni
 	if err != nil {
 		return err
 	}
+
 	defer func() {
 		if err := r.Close(); err != nil {
 			log.Printf("Failed to close reader: %v", err)
@@ -276,12 +296,14 @@ func extractLayer(layer conregv1.Layer, destDir string) error { //nolint:gocogni
 		if errors.Is(err, io.EOF) {
 			break // End of tar archive
 		}
+
 		if err != nil {
 			return err
 		}
 
 		// Resolve the target path
 		target := filepath.Join(destDir, filepath.Clean(hdr.Name))
+
 		targetPath, err := filepath.Abs(target)
 		if err != nil {
 			return errors.Wrap(err, "failed to get absolute path")
@@ -308,10 +330,12 @@ func extractLayer(layer conregv1.Layer, destDir string) error { //nolint:gocogni
 			if err := os.MkdirAll(dir, 0o750); err != nil {
 				return errors.Wrapf(err, "cannot create directory: %s", dir)
 			}
+
 			file, err := os.Create(filepath.Clean(targetPath))
 			if err != nil {
 				return errors.Wrapf(err, "cannot create file: %s", targetPath)
 			}
+
 			defer func() {
 				if err := file.Close(); err != nil {
 					log.Printf("Failed to close file: %v", err)
@@ -332,10 +356,12 @@ func extractLayer(layer conregv1.Layer, destDir string) error { //nolint:gocogni
 // prepareImageReference prepares the image reference by stripping the digest or resolving the tag if necessary.
 func prepareImageReference(image string) (string, error) {
 	if strings.Contains(image, "@") {
-		return strings.SplitN(image, "@", 2)[0], nil
+		return image, nil
 	}
+
 	if strings.Contains(image, ":") {
 		return findImageTagForVersionConstraint(image)
 	}
+
 	return image, nil
 }

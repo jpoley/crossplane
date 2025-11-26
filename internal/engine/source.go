@@ -29,21 +29,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
 )
 
 var _ source.Source = &StoppableSource{}
 
 // NewStoppableSource returns a new watch source that can be stopped.
-func NewStoppableSource(infs cache.Informers, t client.Object, h handler.EventHandler, ps ...predicate.Predicate) *StoppableSource {
-	return &StoppableSource{infs: infs, Type: t, handler: h, predicates: ps}
+func NewStoppableSource(inf cache.Informer, h handler.EventHandler, ps ...predicate.Predicate) *StoppableSource {
+	return &StoppableSource{inf: inf, handler: h, predicates: ps}
 }
 
 // A StoppableSource is a controller-runtime watch source that can be stopped.
 type StoppableSource struct {
-	infs cache.Informers
+	inf cache.Informer
 
-	Type       client.Object
 	handler    handler.EventHandler
 	predicates []predicate.Predicate
 
@@ -53,15 +52,12 @@ type StoppableSource struct {
 // Start is internal and should be called only by the Controller to register
 // an EventHandler with the Informer to enqueue reconcile.Requests.
 func (s *StoppableSource) Start(ctx context.Context, q workqueue.TypedRateLimitingInterface[reconcile.Request]) error {
-	i, err := s.infs.GetInformer(ctx, s.Type, cache.BlockUntilSynced(true))
-	if err != nil {
-		return errors.Wrapf(err, "cannot get informer for %T", s.Type)
-	}
-
-	reg, err := i.AddEventHandler(NewEventHandler(ctx, q, s.handler, s.predicates...).HandlerFuncs())
+	// TODO(negz): Should we check if the informer is stopped first?
+	reg, err := s.inf.AddEventHandler(NewEventHandler(ctx, q, s.handler, s.predicates...).HandlerFuncs())
 	if err != nil {
 		return errors.Wrapf(err, "cannot add event handler")
 	}
+
 	s.reg = reg
 
 	return nil
@@ -69,21 +65,17 @@ func (s *StoppableSource) Start(ctx context.Context, q workqueue.TypedRateLimiti
 
 // Stop removes the EventHandler from the source's Informer. The Informer will
 // stop sending events to the source.
-func (s *StoppableSource) Stop(ctx context.Context) error {
-	if s.reg == nil {
+func (s *StoppableSource) Stop(_ context.Context) error {
+	if s.reg == nil || s.inf.IsStopped() {
 		return nil
 	}
 
-	i, err := s.infs.GetInformer(ctx, s.Type)
-	if err != nil {
-		return errors.Wrapf(err, "cannot get informer for %T", s.Type)
-	}
-
-	if err := i.RemoveEventHandler(s.reg); err != nil {
+	if err := s.inf.RemoveEventHandler(s.reg); err != nil {
 		return errors.Wrap(err, "cannot remove event handler")
 	}
 
 	s.reg = nil
+
 	return nil
 }
 
@@ -119,7 +111,7 @@ func (e *EventHandler) HandlerFuncs() kcache.ResourceEventHandlerFuncs {
 }
 
 // OnAdd creates CreateEvent and calls Create on EventHandler.
-func (e *EventHandler) OnAdd(obj interface{}) {
+func (e *EventHandler) OnAdd(obj any) {
 	o, ok := obj.(client.Object)
 	if !ok {
 		return
@@ -134,11 +126,12 @@ func (e *EventHandler) OnAdd(obj interface{}) {
 
 	ctx, cancel := context.WithCancel(e.ctx)
 	defer cancel()
+
 	e.handler.Create(ctx, c, e.queue)
 }
 
 // OnUpdate creates UpdateEvent and calls Update on EventHandler.
-func (e *EventHandler) OnUpdate(oldObj, newObj interface{}) {
+func (e *EventHandler) OnUpdate(oldObj, newObj any) {
 	o, ok := oldObj.(client.Object)
 	if !ok {
 		return
@@ -159,11 +152,12 @@ func (e *EventHandler) OnUpdate(oldObj, newObj interface{}) {
 
 	ctx, cancel := context.WithCancel(e.ctx)
 	defer cancel()
+
 	e.handler.Update(ctx, u, e.queue)
 }
 
 // OnDelete creates DeleteEvent and calls Delete on EventHandler.
-func (e *EventHandler) OnDelete(obj interface{}) {
+func (e *EventHandler) OnDelete(obj any) {
 	var d event.DeleteEvent
 
 	switch o := obj.(type) {
@@ -178,6 +172,7 @@ func (e *EventHandler) OnDelete(obj interface{}) {
 		if !ok {
 			return
 		}
+
 		d = event.DeleteEvent{DeleteStateUnknown: true, Object: wrapped}
 
 	default:
@@ -192,5 +187,6 @@ func (e *EventHandler) OnDelete(obj interface{}) {
 
 	ctx, cancel := context.WithCancel(e.ctx)
 	defer cancel()
+
 	e.handler.Delete(ctx, d, e.queue)
 }

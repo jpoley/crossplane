@@ -18,35 +18,36 @@ package composite
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
-	"strings"
+	"time"
 
-	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	kunstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/event"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/composed"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/composite"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composed"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
-	fnv1 "github.com/crossplane/crossplane/apis/apiextensions/fn/proto/v1"
-	v1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
-	"github.com/crossplane/crossplane/internal/names"
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	"github.com/crossplane/crossplane/v2/internal/names"
+	"github.com/crossplane/crossplane/v2/internal/ssa"
+	"github.com/crossplane/crossplane/v2/internal/xcrd"
+	"github.com/crossplane/crossplane/v2/internal/xerrors"
+	"github.com/crossplane/crossplane/v2/internal/xfn"
+	fnv1 "github.com/crossplane/crossplane/v2/proto/fn/v1"
 )
 
 // Error strings.
@@ -55,28 +56,32 @@ const (
 	errGetExistingCDs           = "cannot get existing composed resources"
 	errBuildObserved            = "cannot build observed state for RunFunctionRequest"
 	errGarbageCollectCDs        = "cannot garbage collect composed resources that are no longer desired"
-	errApplyXRRefs              = "cannot update composite resource spec.resourceRefs"
+	errApplyXRRefs              = "cannot update composed resource references"
 	errApplyXRStatus            = "cannot apply composite resource status"
-	errAnonymousCD              = "encountered composed resource without required \"" + AnnotationKeyCompositionResourceName + "\" annotation"
+	errAnonymousCD              = "encountered composed resource without required \"" + xcrd.AnnotationKeyCompositionResourceName + "\" annotation"
 	errUnmarshalDesiredXRStatus = "cannot unmarshal desired composite resource status from RunFunctionResponse"
 	errXRAsStruct               = "cannot encode composite resource to protocol buffer Struct well-known type"
 	errStructFromUnstructured   = "cannot create Struct"
-	errGetExtraResourceByName   = "cannot get extra resource by name"
-	errNilResourceSelector      = "resource selector should not be nil"
-	errExtraResourceAsStruct    = "cannot encode extra resource to protocol buffer Struct well-known type"
-	errUnknownResourceSelector  = "cannot get extra resource by name: unknown resource selector type"
-	errListExtraResources       = "cannot list extra resources"
+	errGetComposed              = "cannot get composed resource"
+	errMarshalJSON              = "cannot marshal to JSON"
 
-	errFmtApplyCD                    = "cannot apply composed resource %q"
-	errFmtFetchCDConnectionDetails   = "cannot fetch connection details for composed resource %q (a %s named %s)"
-	errFmtUnmarshalPipelineStepInput = "cannot unmarshal input for Composition pipeline step %q"
-	errFmtGetCredentialsFromSecret   = "cannot get Composition pipeline step %q credential %q from Secret"
-	errFmtRunPipelineStep            = "cannot run Composition pipeline step %q"
-	errFmtControllerMismatch         = "refusing to delete composed resource %q that is controlled by %s %q"
-	errFmtDeleteCD                   = "cannot delete composed resource %q (a %s named %s)"
-	errFmtUnmarshalDesiredCD         = "cannot unmarshal desired composed resource %q from RunFunctionResponse"
-	errFmtCDAsStruct                 = "cannot encode composed resource %q to protocol buffer Struct well-known type"
-	errFmtFatalResult                = "pipeline step %q returned a fatal result: %s"
+	errFmtApplyCD                     = "cannot apply composed resource %q"
+	errFmtFetchCDConnectionDetails    = "cannot fetch connection details for composed resource %q (a %s named %s)"
+	errFmtUnmarshalPipelineStepInput  = "cannot unmarshal input for Composition pipeline step %q"
+	errFmtGetCredentialsFromSecret    = "cannot get Composition pipeline step %q credential %q from Secret"
+	errFmtRunPipelineStep             = "cannot run Composition pipeline step %q"
+	errFmtControllerMismatch          = "refusing to delete composed resource %q that is controlled by %s %q"
+	errFmtCleanupLabelsCD             = "cannot cleanup composed resource labels of resource %q (a %s named %s)"
+	errFmtDeleteCD                    = "cannot delete composed resource %q (a %s named %s)"
+	errFmtUnmarshalDesiredCD          = "cannot unmarshal desired composed resource %q from RunFunctionResponse"
+	errFmtRenderMetadata              = "cannot render metadata for composed resource %q"
+	errFmtGenerateName                = "cannot generate a name for composed resource %q"
+	errFmtCDAsStruct                  = "cannot encode composed resource %q to protocol buffer Struct well-known type"
+	errFmtFatalResult                 = "pipeline step %q returned a fatal result: %s"
+	errFmtInvalidName                 = "cannot apply composed resource %q because it has an invalid name %q. Must be a valid RFC 1123 subdomain name."
+	errFmtGetResourceMapping          = "cannot check if composed resource %q is namespaced (a %s named %s)"
+	errFmtNamespacedXRClusterResource = "cannot apply cluster scoped composed resource %q (a %s named %s) for a namespaced composite resource."
+	errFmtFetchBootstrapRequirements  = "cannot fetch bootstrap required resources for requirement %q"
 )
 
 // Server-side-apply field owners. We need two of these because it's possible
@@ -102,14 +107,14 @@ type FunctionComposer struct {
 	client    client.Client
 	composite xr
 	pipeline  FunctionRunner
+	resources xfn.RequiredResourcesFetcher
 }
 
 type xr struct {
 	names.NameGenerator
-	managed.ConnectionDetailsFetcher
+	ConnectionDetailsFetcher
 	ComposedResourceObserver
 	ComposedResourceGarbageCollector
-	ExtraResourcesFetcher
 	ManagedFieldsUpgrader
 }
 
@@ -127,6 +132,18 @@ func (fn FunctionRunnerFn) RunFunction(ctx context.Context, name string, req *fn
 	return fn(ctx, name, req)
 }
 
+// A ConnectionSecretOwner is a resource with a connection secret.
+type ConnectionSecretOwner interface {
+	resource.Object
+	resource.ConnectionSecretWriterTo
+}
+
+// A ConnectionDetailsFetcher fetches connection details for the supplied
+// Connection Secret owner.
+type ConnectionDetailsFetcher interface {
+	FetchConnection(ctx context.Context, so ConnectionSecretOwner) (managed.ConnectionDetails, error)
+}
+
 // A ComposedResourceObserver observes existing composed resources.
 type ComposedResourceObserver interface {
 	ObserveComposedResources(ctx context.Context, xr resource.Composite) (ComposedResourceStates, error)
@@ -138,19 +155,6 @@ type ComposedResourceObserverFn func(ctx context.Context, xr resource.Composite)
 // ObserveComposedResources observes existing composed resources.
 func (fn ComposedResourceObserverFn) ObserveComposedResources(ctx context.Context, xr resource.Composite) (ComposedResourceStates, error) {
 	return fn(ctx, xr)
-}
-
-// A ExtraResourcesFetcher gets extra resources matching a selector.
-type ExtraResourcesFetcher interface {
-	Fetch(ctx context.Context, rs *fnv1.ResourceSelector) (*fnv1.Resources, error)
-}
-
-// An ExtraResourcesFetcherFn gets extra resources matching the selector.
-type ExtraResourcesFetcherFn func(ctx context.Context, rs *fnv1.ResourceSelector) (*fnv1.Resources, error)
-
-// Fetch gets extra resources matching the selector.
-func (fn ExtraResourcesFetcherFn) Fetch(ctx context.Context, rs *fnv1.ResourceSelector) (*fnv1.Resources, error) {
-	return fn(ctx, rs)
 }
 
 // A ComposedResourceGarbageCollector deletes observed composed resources that
@@ -173,16 +177,14 @@ func (fn ComposedResourceGarbageCollectorFn) GarbageCollectComposedResources(ctx
 // apply to server-side apply. This is necessary when an object was previously
 // managed using client-side apply, but should now be managed using server-side
 // apply. See https://github.com/kubernetes/kubernetes/issues/99003 for details.
-type ManagedFieldsUpgrader interface {
-	Upgrade(ctx context.Context, obj client.Object) error
-}
+type ManagedFieldsUpgrader = ssa.ManagedFieldsUpgrader
 
 // A FunctionComposerOption is used to configure a FunctionComposer.
 type FunctionComposerOption func(*FunctionComposer)
 
-// WithCompositeConnectionDetailsFetcher configures how the FunctionComposer should
-// get the composite resource's connection details.
-func WithCompositeConnectionDetailsFetcher(f managed.ConnectionDetailsFetcher) FunctionComposerOption {
+// WithCompositeConnectionDetailsFetcher configures how the FunctionComposer
+// should get the composite resource's connection details.
+func WithCompositeConnectionDetailsFetcher(f ConnectionDetailsFetcher) FunctionComposerOption {
 	return func(p *FunctionComposer) {
 		p.composite.ConnectionDetailsFetcher = f
 	}
@@ -213,23 +215,32 @@ func WithManagedFieldsUpgrader(u ManagedFieldsUpgrader) FunctionComposerOption {
 	}
 }
 
+// WithRequiredResourcesFetcher configures how the FunctionComposer should
+// fetch required resources for composition functions.
+func WithRequiredResourcesFetcher(f xfn.RequiredResourcesFetcher) FunctionComposerOption {
+	return func(p *FunctionComposer) {
+		p.resources = f
+	}
+}
+
 // NewFunctionComposer returns a new Composer that supports composing resources using
 // both Patch and Transform (P&T) logic and a pipeline of Composition Functions.
-func NewFunctionComposer(kube client.Client, r FunctionRunner, o ...FunctionComposerOption) *FunctionComposer {
-	f := NewSecretConnectionDetailsFetcher(kube)
+func NewFunctionComposer(cached, uncached client.Client, r FunctionRunner, o ...FunctionComposerOption) *FunctionComposer {
+	f := NewSecretConnectionDetailsFetcher(cached)
 
 	c := &FunctionComposer{
-		client: kube,
+		client: cached,
 
 		composite: xr{
 			ConnectionDetailsFetcher:         f,
-			ComposedResourceObserver:         NewExistingComposedResourceObserver(kube, f),
-			ComposedResourceGarbageCollector: NewDeletingComposedResourceGarbageCollector(kube),
-			NameGenerator:                    names.NewNameGenerator(kube),
-			ManagedFieldsUpgrader:            NewPatchingManagedFieldsUpgrader(kube),
+			ComposedResourceObserver:         NewExistingComposedResourceObserver(cached, uncached, f),
+			ComposedResourceGarbageCollector: NewDeletingComposedResourceGarbageCollector(cached),
+			NameGenerator:                    names.NewNameGenerator(cached),
+			ManagedFieldsUpgrader:            ssa.NewPatchingManagedFieldsUpgrader(cached, ssa.PrefixMatch(FieldOwnerComposedPrefix)),
 		},
 
-		pipeline: r,
+		pipeline:  r,
+		resources: xfn.NewExistingRequiredResourcesFetcher(cached),
 	}
 
 	for _, fn := range o {
@@ -262,10 +273,16 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 	if err != nil {
 		return CompositionResult{}, errors.Wrap(err, errFetchXRConnectionDetails)
 	}
+
 	o, err := AsState(xr, xrConns, observed)
 	if err != nil {
 		return CompositionResult{}, errors.Wrap(err, errBuildObserved)
 	}
+
+	// Time-to-live for this composition pipeline run. Each function returns
+	// a TTL. The pipeline's TTL will be the shortest non-zero TTL returned
+	// by any function. A TTL of zero means unlimited TTL.
+	var ttl time.Duration
 
 	// The Function pipeline starts with empty desired state.
 	d := &fnv1.State{}
@@ -287,12 +304,13 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 			if err := in.UnmarshalJSON(fn.Input.Raw); err != nil {
 				return CompositionResult{}, errors.Wrapf(err, errFmtUnmarshalPipelineStepInput, fn.Step)
 			}
+
 			req.Input = in
 		}
 
 		req.Credentials = map[string]*fnv1.Credentials{}
 		for _, cs := range fn.Credentials {
-			// For now we only support loading credentials from secrets.
+			// For now, we only support loading credentials from secrets.
 			if cs.Source != v1.FunctionCredentialsSourceSecret || cs.SecretRef == nil {
 				continue
 			}
@@ -301,6 +319,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 			if err := c.client.Get(ctx, client.ObjectKey{Namespace: cs.SecretRef.Namespace, Name: cs.SecretRef.Name}, s); err != nil {
 				return CompositionResult{}, errors.Wrapf(err, errFmtGetCredentialsFromSecret, fn.Step, cs.Name)
 			}
+
 			req.Credentials[cs.Name] = &fnv1.Credentials{
 				Source: &fnv1.Credentials_CredentialData{
 					CredentialData: &fnv1.CredentialData{
@@ -310,11 +329,32 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 			}
 		}
 
-		// TODO(negz): Generate a content-addressable tag for this request.
-		// Perhaps using https://github.com/cerbos/protoc-gen-go-hashpb ?
+		// Pre-populate bootstrap requirements
+		if fn.Requirements != nil {
+			// Bootstrap requirements were introduced alongside the new field names,
+			// so we only need to support the new required_resources field.
+			req.RequiredResources = map[string]*fnv1.Resources{}
+			for _, sel := range fn.Requirements.RequiredResources {
+				resources, err := c.resources.Fetch(ctx, xfn.ToProtobufResourceSelector(&sel))
+				if err != nil {
+					return CompositionResult{}, errors.Wrapf(err, errFmtFetchBootstrapRequirements, sel.RequirementName)
+				}
+				req.RequiredResources[sel.RequirementName] = resources
+			}
+		}
+
+		req.Meta = &fnv1.RequestMeta{Tag: Tag(req)}
+
 		rsp, err := c.pipeline.RunFunction(ctx, fn.FunctionRef.Name, req)
 		if err != nil {
 			return CompositionResult{}, errors.Wrapf(err, errFmtRunPipelineStep, fn.Step)
+		}
+
+		// If this Function specified a non-zero TTL that's less than
+		// the current recorded TTL for the pipeline, it's the new TTL
+		// for the pipeline.
+		if d := rsp.GetMeta().GetTtl().AsDuration(); d > 0 && (ttl == 0 || d < ttl) {
+			ttl = d
 		}
 
 		// Pass the desired state returned by this Function to the next one.
@@ -326,6 +366,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 
 		for _, c := range rsp.GetConditions() {
 			var status corev1.ConditionStatus
+
 			switch c.GetStatus() {
 			case fnv1.Status_STATUS_CONDITION_TRUE:
 				status = corev1.ConditionTrue
@@ -375,15 +416,17 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 				// about an exceptional, unexpected state.
 				e.Target = CompositionTargetComposite
 			}
+
 			events = append(events, e)
 		}
 	}
 
 	// Load our desired composed resources from the Function pipeline.
 	desired := ComposedResourceStates{}
+
 	for name, dr := range d.GetResources() {
 		cd := composed.New()
-		if err := FromStruct(cd, dr.GetResource()); err != nil {
+		if err := xfn.FromStruct(cd, dr.GetResource()); err != nil {
 			return CompositionResult{}, errors.Wrapf(err, errFmtUnmarshalDesiredCD, name)
 		}
 
@@ -393,6 +436,25 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 		if ok {
 			cd.SetNamespace(or.Resource.GetNamespace())
 			cd.SetName(or.Resource.GetName())
+			cd.SetGenerateName(or.Resource.GetGenerateName())
+		}
+
+		// If the XR is namespaced then the composed resource must be too.
+		// NOTE(lsviben): We only check resources which do not have a namespace
+		// set, although the namespace for all resources composed by a
+		// namespaced XR is set in the RenderComposedResourceMetadata
+		// step. But as in the previous step we set the namespace of observed
+		// resources, we are effectively checking only once per resource,
+		// before we create it.
+		if xr.GetNamespace() != "" && cd.GetNamespace() == "" {
+			isNs, err := c.client.IsObjectNamespaced(cd)
+			if err != nil {
+				return CompositionResult{}, errors.Wrapf(err, errFmtGetResourceMapping, name, cd.GetKind(), cd.GetName())
+			}
+
+			if !isNs {
+				return CompositionResult{}, errors.Errorf(errFmtNamespacedXRClusterResource, name, cd.GetKind(), cd.GetName())
+			}
 		}
 
 		// Set standard composed resource metadata that is derived from the XR.
@@ -409,8 +471,17 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 		// million names).
 		if cd.GetName() == "" {
 			if err := c.composite.GenerateName(ctx, cd); err != nil {
-				return CompositionResult{}, errors.Wrapf(err, errFmtGenerateName, name)
+				return CompositionResult{}, xerrors.ComposedResourceError{
+					Message:  fmt.Sprintf(errFmtGenerateName, name),
+					Composed: cd,
+					Err:      err,
+				}
 			}
+		}
+
+		// Validate name.
+		if ok, _ := names.ValidateName(cd.GetName(), cd.GetObjectKind().GroupVersionKind().GroupKind()); !ok {
+			return CompositionResult{}, errors.Errorf(errFmtInvalidName, name, cd.GetName())
 		}
 
 		// TODO(negz): Should we try to automatically derive readiness if the
@@ -422,16 +493,6 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 			ConnectionDetails: dr.GetConnectionDetails(),
 			Ready:             dr.GetReady() == fnv1.Ready_READY_TRUE,
 		}
-	}
-
-	compositeRes := CompositeResource{}
-
-	// Consider the explicit composite unready state in the function response:
-	switch d.GetComposite().GetReady() { //nolint:exhaustive // only check for false or true
-	case fnv1.Ready_READY_TRUE:
-		compositeRes.Ready = ptr.To(true)
-	case fnv1.Ready_READY_FALSE:
-		compositeRes.Ready = ptr.To(false)
 	}
 
 	// Garbage collect any observed resources that aren't part of our final
@@ -448,9 +509,8 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 	// randomly generated names and hit an error applying the second one we need
 	// to know that the first one (that _was_ created) exists next time we
 	// reconcile the XR.
-	refs := composite.New()
-	refs.SetAPIVersion(xr.GetAPIVersion())
-	refs.SetKind(xr.GetKind())
+	refs := composite.New(composite.WithSchema(xr.Schema), composite.WithGroupVersionKind(xr.GroupVersionKind()))
+	refs.SetNamespace(xr.GetNamespace())
 	refs.SetName(xr.GetName())
 	UpdateResourceRefs(refs, desired)
 
@@ -465,15 +525,16 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 		return CompositionResult{}, errors.Wrap(err, errApplyXRRefs)
 	}
 
-	// TODO: Remove this call to Upgrade once no supported version of
-	// Crossplane have native P&T available. We only need to upgrade field managers if the
-	// native PTComposer might have applied the composed resources before, using the
-	// default client-side apply field manager "crossplane",
-	// but now migrated to use Composition functions, which uses server-side apply instead.
-	// Without this managedFields upgrade, the composed resources ends up having shared ownership
-	// of fields and field removals won't sync properly.
+	// TODO: Remove this call to Upgrade once no supported version of Crossplane
+	// have native P&T available. We only need to upgrade field managers if the
+	// native PTComposer might have applied the composed resources before, using
+	// the default client-side apply field manager "crossplane", but now
+	// migrated to use Composition functions, which uses server-side apply
+	// instead. Without this managedFields upgrade, the composed resources ends
+	// up having shared ownership of fields and field removals won't sync
+	// properly.
 	for _, cd := range observed {
-		if err := c.composite.ManagedFieldsUpgrader.Upgrade(ctx, cd.Resource); err != nil {
+		if err := c.composite.Upgrade(ctx, cd.Resource); err != nil {
 			return CompositionResult{}, errors.Wrap(err, "cannot upgrade composed resource's managed fields from client-side to server-side apply")
 		}
 	}
@@ -513,11 +574,16 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 				// functions, while there we defaulted to also set ready false
 				// in case of apply errors.
 				resources = append(resources, ComposedResource{ResourceName: name, Ready: cd.Ready, Synced: false})
+
 				continue
 			}
-			return CompositionResult{}, errors.Wrapf(err, errFmtApplyCD, name)
-		}
 
+			return CompositionResult{}, xerrors.ComposedResourceError{
+				Message:  fmt.Sprintf(errFmtApplyCD, name),
+				Composed: cd.Resource,
+				Err:      err,
+			}
+		}
 		resources = append(resources, ComposedResource{ResourceName: name, Ready: cd.Ready, Synced: true})
 	}
 
@@ -529,15 +595,28 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 	// GVK and name so that our client knows what resource to patch.
 	v := xr.GetAPIVersion()
 	k := xr.GetKind()
+	ns := xr.GetNamespace()
 	n := xr.GetName()
 	u := xr.GetUID()
-	if err := FromStruct(xr, d.GetComposite().GetResource()); err != nil {
+	cs := xr.GetConditions()
+
+	if err := xfn.FromStruct(xr, d.GetComposite().GetResource()); err != nil {
 		return CompositionResult{}, errors.Wrap(err, errUnmarshalDesiredXRStatus)
 	}
+
 	xr.SetAPIVersion(v)
 	xr.SetKind(k)
+	xr.SetNamespace(ns)
 	xr.SetName(n)
 	xr.SetUID(u)
+
+	// Include any pending conditions so we don't lose them. SetConditions
+	// will set conditions to nil if it's not passed any arguments. SSA
+	// interprets this as null and rejects it, so we only set them if
+	// there's actually some to set.
+	if len(cs) > 0 {
+		xr.SetConditions(cs...)
+	}
 
 	// NOTE(phisco): Here we are fine using a hardcoded field owner as there is
 	// no risk of conflict between different XRs.
@@ -548,7 +627,42 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 		return CompositionResult{}, errors.Wrap(err, errApplyXRStatus)
 	}
 
-	return CompositionResult{ConnectionDetails: d.GetComposite().GetConnectionDetails(), Composite: compositeRes, Composed: resources, Events: events, Conditions: conditions}, nil
+	var ready *bool
+
+	switch d.GetComposite().GetReady() {
+	case fnv1.Ready_READY_TRUE:
+		ready = ptr.To(true)
+	case fnv1.Ready_READY_FALSE:
+		ready = ptr.To(false)
+	case fnv1.Ready_READY_UNSPECIFIED:
+		// Remains nil.
+	}
+
+	return CompositionResult{
+		Composed:          resources,
+		ConnectionDetails: d.GetComposite().GetConnectionDetails(),
+		Ready:             ready,
+		Events:            events,
+		Conditions:        conditions,
+		TTL:               ttl,
+	}, nil
+}
+
+// Tag uniquely identifies a request. Two identical requests created by the
+// same Crossplane binary will produce identical tags. Different builds of
+// Crossplane may produce different tags for the same inputs. See the docs for
+// the Deterministic protobuf MarshalOption for more details.
+func Tag(req *fnv1.RunFunctionRequest) string {
+	m := proto.MarshalOptions{Deterministic: true}
+
+	b, err := m.Marshal(req)
+	if err != nil {
+		return ""
+	}
+
+	h := sha256.Sum256(b)
+
+	return hex.EncodeToString(h[:])
 }
 
 // ComposedFieldOwnerName generates a unique field owner name
@@ -571,6 +685,7 @@ func (c *FunctionComposer) Compose(ctx context.Context, xr *composite.Unstructur
 func ComposedFieldOwnerName(xr *composite.Unstructured) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(xr.GetName() + xr.GroupVersionKind().GroupKind().String()))
+
 	return fmt.Sprintf("%s/%x", FieldOwnerComposedPrefix, h.Sum(nil))
 }
 
@@ -578,14 +693,15 @@ func ComposedFieldOwnerName(xr *composite.Unstructured) string {
 // any existing composed resources from the API server. It also loads their
 // connection details.
 type ExistingComposedResourceObserver struct {
-	resource client.Reader
-	details  managed.ConnectionDetailsFetcher
+	cached   client.Reader
+	uncached client.Reader
+	details  ConnectionDetailsFetcher
 }
 
 // NewExistingComposedResourceObserver returns a ComposedResourceGetter that
 // fetches an XR's existing composed resources.
-func NewExistingComposedResourceObserver(c client.Reader, f managed.ConnectionDetailsFetcher) *ExistingComposedResourceObserver {
-	return &ExistingComposedResourceObserver{resource: c, details: f}
+func NewExistingComposedResourceObserver(c, uc client.Reader, f ConnectionDetailsFetcher) *ExistingComposedResourceObserver {
+	return &ExistingComposedResourceObserver{cached: c, uncached: uc, details: f}
 }
 
 // ObserveComposedResources begins building composed resource state by
@@ -609,13 +725,27 @@ func (g *ExistingComposedResourceObserver) ObserveComposedResources(ctx context.
 			continue
 		}
 
-		r := composed.New(composed.FromReference(ref))
+		// Cluster scoped XRs can compose resources either at the cluster scope,
+		// or in arbitrary namespaces. They can optionally include a namespace
+		// in their composed resource references. Namespaced XRs must compose
+		// resources in their own namespace.
 		nn := types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
-		err := g.resource.Get(ctx, nn, r)
-		if kerrors.IsNotFound(err) {
-			// We believe we created this resource, but it doesn't exist.
-			continue
+		if xr.GetNamespace() != "" {
+			nn.Namespace = xr.GetNamespace()
 		}
+
+		r := composed.New(composed.FromReference(ref))
+
+		err := g.cached.Get(ctx, nn, r)
+		if kerrors.IsNotFound(err) {
+			// We believe we created this resource, but it is not in the cache yet?  Try again without the cache.
+			err = g.uncached.Get(ctx, nn, r)
+			if kerrors.IsNotFound(err) {
+				// We believe we created this resource, but it no longer exists.
+				continue
+			}
+		}
+
 		if err != nil {
 			return nil, errors.Wrap(err, errGetComposed)
 		}
@@ -627,7 +757,7 @@ func (g *ExistingComposedResourceObserver) ObserveComposedResources(ctx context.
 			continue
 		}
 
-		name := GetCompositionResourceName(r)
+		name := ResourceName(xcrd.GetCompositionResourceName(r))
 		if name == "" {
 			return nil, errors.New(errAnonymousCD)
 		}
@@ -646,7 +776,7 @@ func (g *ExistingComposedResourceObserver) ObserveComposedResources(ctx context.
 // AsState builds state for a RunFunctionRequest from the XR and composed
 // resources.
 func AsState(xr resource.Composite, xc managed.ConnectionDetails, rs ComposedResourceStates) (*fnv1.State, error) {
-	r, err := AsStruct(xr)
+	r, err := xfn.AsStruct(xr)
 	if err != nil {
 		return nil, errors.Wrap(err, errXRAsStruct)
 	}
@@ -655,7 +785,7 @@ func AsState(xr resource.Composite, xc managed.ConnectionDetails, rs ComposedRes
 
 	ocds := make(map[string]*fnv1.Resource)
 	for name, or := range rs {
-		r, err := AsStruct(or.Resource)
+		r, err := xfn.AsStruct(or.Resource)
 		if err != nil {
 			return nil, errors.Wrapf(err, errFmtCDAsStruct, name)
 		}
@@ -664,54 +794,6 @@ func AsState(xr resource.Composite, xc managed.ConnectionDetails, rs ComposedRes
 	}
 
 	return &fnv1.State{Composite: oxr, Resources: ocds}, nil
-}
-
-// AsStruct converts the supplied object to a protocol buffer Struct well-known
-// type.
-func AsStruct(o runtime.Object) (*structpb.Struct, error) {
-	// If the supplied object is *Unstructured we don't need to round-trip.
-	if u, ok := o.(*kunstructured.Unstructured); ok {
-		s, err := structpb.NewStruct(u.Object)
-		return s, errors.Wrap(err, errStructFromUnstructured)
-	}
-
-	// If the supplied object wraps *Unstructured we don't need to round-trip.
-	if w, ok := o.(unstructured.Wrapper); ok {
-		s, err := structpb.NewStruct(w.GetUnstructured().Object)
-		return s, errors.Wrap(err, errStructFromUnstructured)
-	}
-
-	// Fall back to a JSON round-trip.
-	b, err := json.Marshal(o)
-	if err != nil {
-		return nil, errors.Wrap(err, errMarshalJSON)
-	}
-
-	s := &structpb.Struct{}
-	return s, errors.Wrap(s.UnmarshalJSON(b), errUnmarshalJSON)
-}
-
-// FromStruct populates the supplied object with content loaded from the Struct.
-func FromStruct(o client.Object, s *structpb.Struct) error {
-	// If the supplied object is *Unstructured we don't need to round-trip.
-	if u, ok := o.(*kunstructured.Unstructured); ok {
-		u.Object = s.AsMap()
-		return nil
-	}
-
-	// If the supplied object wraps *Unstructured we don't need to round-trip.
-	if w, ok := o.(unstructured.Wrapper); ok {
-		w.GetUnstructured().Object = s.AsMap()
-		return nil
-	}
-
-	// Fall back to a JSON round-trip.
-	b, err := protojson.Marshal(s)
-	if err != nil {
-		return errors.Wrap(err, errMarshalProtoStruct)
-	}
-
-	return errors.Wrap(json.Unmarshal(b, o), errUnmarshalJSON)
 }
 
 // An DeletingComposedResourceGarbageCollector deletes undesired composed resources from
@@ -731,6 +813,7 @@ func NewDeletingComposedResourceGarbageCollector(c client.Writer) *DeletingCompo
 // in the final desired state after running the pipeline) from the API server.
 func (d *DeletingComposedResourceGarbageCollector) GarbageCollectComposedResources(ctx context.Context, owner metav1.Object, observed, desired ComposedResourceStates) error {
 	del := ComposedResourceStates{}
+
 	for name, cd := range observed {
 		if _, ok := desired[name]; !ok {
 			del[name] = cd
@@ -751,6 +834,15 @@ func (d *DeletingComposedResourceGarbageCollector) GarbageCollectComposedResourc
 			return errors.Errorf(errFmtControllerMismatch, name, c.Kind, c.Name)
 		}
 
+		// Remove the labels that indicate this resource was owned by a
+		// Composition. This helps differentiate whether a resource was deleted
+		// due to garbage collection or because its owning composite was deleted.
+		meta.RemoveLabels(cd.Resource, xcrd.LabelKeyNamePrefixForComposed, xcrd.LabelKeyClaimName, xcrd.LabelKeyClaimNamespace)
+
+		if err := d.client.Update(ctx, cd.Resource); resource.IgnoreNotFound(err) != nil {
+			return errors.Wrapf(err, errFmtCleanupLabelsCD, name, cd.Resource.GetObjectKind().GroupVersionKind().Kind, cd.Resource.GetName())
+		}
+		// Delete the composed resource.
 		if err := d.client.Delete(ctx, cd.Resource); resource.IgnoreNotFound(err) != nil {
 			return errors.Wrapf(err, errFmtDeleteCD, name, cd.Resource.GetObjectKind().GroupVersionKind().Kind, cd.Resource.GetName())
 		}
@@ -761,10 +853,20 @@ func (d *DeletingComposedResourceGarbageCollector) GarbageCollectComposedResourc
 
 // UpdateResourceRefs updates the supplied state to ensure the XR references all
 // composed resources that exist or are pending creation.
-func UpdateResourceRefs(xr resource.ComposedResourcesReferencer, desired ComposedResourceStates) {
+func UpdateResourceRefs(xr resource.Composite, desired ComposedResourceStates) {
+	namespaced := xr.GetNamespace() != ""
+
 	refs := make([]corev1.ObjectReference, 0, len(desired))
 	for _, dr := range desired {
 		ref := meta.ReferenceTo(dr.Resource, dr.Resource.GetObjectKind().GroupVersionKind())
+
+		// If the XR is namespaced it can only compose resources in its own
+		// namespace. Its OpenAPI schema won't allow including a namespace in
+		// its resourceRefs.
+		if namespaced {
+			ref.Namespace = ""
+		}
+
 		refs = append(refs, *ref)
 	}
 
@@ -777,91 +879,10 @@ func UpdateResourceRefs(xr resource.ComposedResourcesReferencer, desired Compose
 	xr.SetResourceReferences(refs)
 }
 
-// A PatchingManagedFieldsUpgrader uses a JSON patch to upgrade an object's
-// managed fields from client-side to server-side apply. The upgrade is a no-op
-// if the object does not need upgrading.
-type PatchingManagedFieldsUpgrader struct {
-	client client.Writer
-}
-
-// NewPatchingManagedFieldsUpgrader returns a ManagedFieldsUpgrader that uses a
-// JSON patch to upgrade and object's managed fields from client-side to
-// server-side apply.
-func NewPatchingManagedFieldsUpgrader(w client.Writer) *PatchingManagedFieldsUpgrader {
-	return &PatchingManagedFieldsUpgrader{client: w}
-}
-
-// Upgrade the supplied composed object's field managers from client-side to server-side
-// apply.
-//
-// This is a multi-step process.
-//
-// Step 1: All fields are owned by manager 'crossplane' operation 'Update'. This
-// represents all fields set by the XR controller up to this point.
-//
-// Step 2: Upgrade is called for the first time. We clear all field managers.
-//
-// Step 3: The XR controller server-side applies its fully specified intent
-// as field manager with prefix 'apiextensions.crossplane.io/composed/'. This becomes the
-// manager of all the fields that are part of the XR controller's fully
-// specified intent. All existing fields the XR controller didn't specify
-// become owned by a special manager - 'before-first-apply', operation 'Update'.
-//
-// Step 4: Upgrade is called for the second time. It deletes the
-// 'before-first-apply' field manager entry. Only the XR composed field manager
-// remains.
-func (u *PatchingManagedFieldsUpgrader) Upgrade(ctx context.Context, obj client.Object) error {
-	// The composed resource doesn't exist, nothing to upgrade.
-	if !meta.WasCreated(obj) {
-		return nil
-	}
-
-	foundSSA := false
-	foundBFA := false
-	idxBFA := -1
-
-	for i, e := range obj.GetManagedFields() {
-		if strings.HasPrefix(e.Manager, FieldOwnerComposedPrefix) {
-			foundSSA = true
-		}
-		if e.Manager == "before-first-apply" {
-			foundBFA = true
-			idxBFA = i
-		}
-	}
-
-	switch {
-	// If our SSA field manager exists and the before-first-apply field manager
-	// doesn't, we've already done the upgrade. Don't do it again.
-	case foundSSA && !foundBFA:
-		return nil
-
-	// We found our SSA field manager but also before-first-apply. It should now
-	// be safe to delete before-first-apply.
-	case foundSSA && foundBFA:
-		p := []byte(fmt.Sprintf(`[
-			{"op": "remove", "path": "/metadata/managedFields/%d"},
-			{"op": "replace", "path": "/metadata/resourceVersion", "value": "%s"}
-		]`, idxBFA, obj.GetResourceVersion()))
-		return errors.Wrap(resource.IgnoreNotFound(u.client.Patch(ctx, obj, client.RawPatch(types.JSONPatchType, p))), "cannot remove before-first-apply from field managers")
-
-	// We didn't find our SSA field manager. This means we haven't started the
-	// upgrade. The first thing we want to do is clear all managed fields.
-	// After we do this we'll let our SSA field manager apply the fields it
-	// cares about. The result will be that our SSA field manager shares
-	// ownership with a new manager named 'before-first-apply'.
-	default:
-		p := []byte(fmt.Sprintf(`[
-			{"op": "replace", "path": "/metadata/managedFields", "value": [{}]},
-			{"op": "replace", "path": "/metadata/resourceVersion", "value": "%s"}
-		]`, obj.GetResourceVersion()))
-		return errors.Wrap(resource.IgnoreNotFound(u.client.Patch(ctx, obj, client.RawPatch(types.JSONPatchType, p))), "cannot clear field managers")
-	}
-}
-
 func convertTarget(t fnv1.Target) CompositionTarget {
 	if t == fnv1.Target_TARGET_COMPOSITE_AND_CLAIM {
 		return CompositionTargetCompositeAndClaim
 	}
+
 	return CompositionTargetComposite
 }

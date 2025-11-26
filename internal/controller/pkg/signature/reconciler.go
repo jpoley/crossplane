@@ -32,14 +32,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/conditions"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	v1 "github.com/crossplane/crossplane/apis/pkg/v1"
-	"github.com/crossplane/crossplane/apis/pkg/v1beta1"
-	"github.com/crossplane/crossplane/internal/controller/pkg/controller"
-	"github.com/crossplane/crossplane/internal/xpkg"
+	v1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	"github.com/crossplane/crossplane/v2/apis/pkg/v1beta1"
+	"github.com/crossplane/crossplane/v2/internal/controller/pkg/controller"
+	"github.com/crossplane/crossplane/v2/internal/xpkg"
 )
 
 const (
@@ -88,13 +88,6 @@ func WithNamespace(n string) ReconcilerOption {
 	}
 }
 
-// WithDefaultRegistry specifies the registry to use for fetching images.
-func WithDefaultRegistry(registry string) ReconcilerOption {
-	return func(r *Reconciler) {
-		r.registry = registry
-	}
-}
-
 // WithServiceAccount specifies the service account to use for fetching images.
 func WithServiceAccount(sa string) ReconcilerOption {
 	return func(r *Reconciler) {
@@ -117,7 +110,7 @@ type Reconciler struct {
 	log            logging.Logger
 	serviceAccount string
 	namespace      string
-	registry       string
+	conditions     conditions.Manager
 
 	newRevision func() v1.PackageRevision
 }
@@ -143,18 +136,17 @@ func SetupProviderRevision(mgr ctrl.Manager, o controller.Options) error {
 		For(&v1.ProviderRevision{}).
 		Watches(&v1beta1.ImageConfig{}, enqueuePackageRevisionsForImageConfig(mgr.GetClient(), log, &v1.ProviderRevisionList{}))
 
-	ro := []ReconcilerOption{
+	r := NewReconciler(mgr.GetClient(),
 		WithNewPackageRevisionFn(np),
 		WithNamespace(o.Namespace),
 		WithServiceAccount(o.ServiceAccount),
-		WithDefaultRegistry(o.DefaultRegistry),
 		WithConfigStore(xpkg.NewImageConfigStore(mgr.GetClient(), o.Namespace)),
 		WithValidator(cosignValidator),
 		WithLogger(log),
-	}
+	)
 
 	return cb.WithOptions(o.ForControllerRuntime()).
-		Complete(ratelimiter.NewReconciler(n, errors.WithSilentRequeueOnConflict(NewReconciler(mgr.GetClient(), ro...)), o.GlobalRateLimiter))
+		Complete(errors.WithSilentRequeueOnConflict(r))
 }
 
 // SetupConfigurationRevision adds a controller that reconciles ConfigurationRevisions.
@@ -178,18 +170,17 @@ func SetupConfigurationRevision(mgr ctrl.Manager, o controller.Options) error {
 		For(&v1.ConfigurationRevision{}).
 		Watches(&v1beta1.ImageConfig{}, enqueuePackageRevisionsForImageConfig(mgr.GetClient(), log, &v1.ConfigurationRevisionList{}))
 
-	ro := []ReconcilerOption{
+	r := NewReconciler(mgr.GetClient(),
 		WithNewPackageRevisionFn(np),
 		WithNamespace(o.Namespace),
 		WithServiceAccount(o.ServiceAccount),
-		WithDefaultRegistry(o.DefaultRegistry),
 		WithConfigStore(xpkg.NewImageConfigStore(mgr.GetClient(), o.Namespace)),
 		WithValidator(cosignValidator),
 		WithLogger(log),
-	}
+	)
 
 	return cb.WithOptions(o.ForControllerRuntime()).
-		Complete(ratelimiter.NewReconciler(n, errors.WithSilentRequeueOnConflict(NewReconciler(mgr.GetClient(), ro...)), o.GlobalRateLimiter))
+		Complete(errors.WithSilentRequeueOnConflict(r))
 }
 
 // SetupFunctionRevision adds a controller that reconciles FunctionRevisions.
@@ -213,25 +204,25 @@ func SetupFunctionRevision(mgr ctrl.Manager, o controller.Options) error {
 		For(&v1.FunctionRevision{}).
 		Watches(&v1beta1.ImageConfig{}, enqueuePackageRevisionsForImageConfig(mgr.GetClient(), log, &v1.FunctionRevisionList{}))
 
-	ro := []ReconcilerOption{
+	r := NewReconciler(mgr.GetClient(),
 		WithNewPackageRevisionFn(np),
 		WithNamespace(o.Namespace),
 		WithServiceAccount(o.ServiceAccount),
-		WithDefaultRegistry(o.DefaultRegistry),
 		WithConfigStore(xpkg.NewImageConfigStore(mgr.GetClient(), o.Namespace)),
 		WithValidator(cosignValidator),
 		WithLogger(log),
-	}
+	)
 
 	return cb.WithOptions(o.ForControllerRuntime()).
-		Complete(ratelimiter.NewReconciler(n, errors.WithSilentRequeueOnConflict(NewReconciler(mgr.GetClient(), ro...)), o.GlobalRateLimiter))
+		Complete(errors.WithSilentRequeueOnConflict(r))
 }
 
 // NewReconciler creates a new package reconciler for signature verification.
 func NewReconciler(client client.Client, opts ...ReconcilerOption) *Reconciler {
 	r := &Reconciler{
-		client: client,
-		log:    logging.NewNopLogger(),
+		client:     client,
+		log:        logging.NewNopLogger(),
+		conditions: conditions.ObservedGenerationPropagationManager{},
 	}
 
 	for _, f := range opts {
@@ -256,10 +247,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 
 		log.Debug(errGetRevision, "error", err)
-		pr.SetConditions(v1.VerificationIncomplete(errors.Wrap(err, errGetRevision)))
+
+		status := r.conditions.For(pr)
+		status.MarkConditions(v1.VerificationIncomplete(errors.Wrap(err, errGetRevision)))
+
 		_ = r.client.Status().Update(ctx, pr)
+
 		return reconcile.Result{}, errors.Wrap(err, errGetRevision)
 	}
+
+	status := r.conditions.For(pr)
 
 	log = log.WithValues(
 		"uid", pr.GetUID(),
@@ -282,26 +279,46 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, nil
 	}
 
-	ic, vc, err := r.config.ImageVerificationConfigFor(ctx, pr.GetSource())
+	imagePath := pr.GetResolvedSource()
+	if imagePath == "" {
+		// The revision reconciler hasn't yet resolved the image for this
+		// package; we can't verify the image until that's done.
+		log.Debug("Waiting for image resolution before verifying package revision")
+		return reconcile.Result{}, nil
+	}
+
+	ic, vc, err := r.config.ImageVerificationConfigFor(ctx, imagePath)
 	if err != nil {
 		log.Debug("Cannot get image verification config", "error", err)
-		pr.SetConditions(v1.VerificationIncomplete(errors.Wrap(err, errGetVerificationConfig)))
+		status.MarkConditions(v1.VerificationIncomplete(errors.Wrap(err, errGetVerificationConfig)))
+
 		_ = r.client.Status().Update(ctx, pr)
+
 		return reconcile.Result{}, errors.Wrap(err, errGetVerificationConfig)
 	}
+
 	if vc == nil || vc.Cosign == nil {
 		// No verification config found for this image, so, we will skip
 		// verification.
 		log.Debug("No signature verification config found for image, skipping verification")
-		pr.SetConditions(v1.VerificationSkipped())
+		status.MarkConditions(v1.VerificationSkipped())
+		pr.ClearAppliedImageConfigRef(v1.ImageConfigReasonVerify)
+
 		return reconcile.Result{}, errors.Wrap(r.client.Status().Update(ctx, pr), "cannot update package status")
 	}
 
-	ref, err := name.ParseReference(pr.GetSource(), name.WithDefaultRegistry(r.registry))
+	pr.SetAppliedImageConfigRefs(v1.ImageConfigRef{
+		Name:   ic,
+		Reason: v1.ImageConfigReasonVerify,
+	})
+
+	ref, err := name.ParseReference(imagePath, name.StrictValidation)
 	if err != nil {
 		log.Debug("Cannot parse package image reference", "error", err)
-		pr.SetConditions(v1.VerificationIncomplete(errors.Wrap(err, errParseReference)))
+		status.MarkConditions(v1.VerificationIncomplete(errors.Wrap(err, errParseReference)))
+
 		_ = r.client.Status().Update(ctx, pr)
+
 		return reconcile.Result{}, errors.Wrap(err, errParseReference)
 	}
 
@@ -310,27 +327,33 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		pullSecrets = append(pullSecrets, s.Name)
 	}
 
-	_, s, err := r.config.PullSecretFor(ctx, pr.GetSource())
+	_, s, err := r.config.PullSecretFor(ctx, imagePath)
 	if err != nil {
 		log.Debug("Cannot get image config pull secret for image", "error", err)
-		pr.SetConditions(v1.VerificationIncomplete(errors.Wrap(err, errGetConfigPullSecret)))
+		status.MarkConditions(v1.VerificationIncomplete(errors.Wrap(err, errGetConfigPullSecret)))
+
 		_ = r.client.Status().Update(ctx, pr)
+
 		return reconcile.Result{}, errors.Wrap(err, errGetConfigPullSecret)
 	}
+
 	if s != "" {
 		pullSecrets = append(pullSecrets, s)
 	}
 
 	if err = r.validator.Validate(ctx, ref, vc, pullSecrets...); err != nil {
 		log.Debug("Signature verification failed", "error", err)
-		pr.SetConditions(v1.VerificationFailed(ic, err))
+		status.MarkConditions(v1.VerificationFailed(ic, err))
+
 		if sErr := r.client.Status().Update(ctx, pr); sErr != nil {
 			return reconcile.Result{}, errors.Wrap(sErr, "cannot update status with failed verification")
 		}
+
 		return reconcile.Result{}, errors.Wrap(err, errFailedVerification)
 	}
 
-	pr.SetConditions(v1.VerificationSucceeded(ic))
+	status.MarkConditions(v1.VerificationSucceeded(ic))
+
 	return reconcile.Result{}, errors.Wrap(r.client.Status().Update(ctx, pr), "cannot update status with successful verification")
 }
 
@@ -353,14 +376,16 @@ func enqueuePackageRevisionsForImageConfig(kube client.Client, log logging.Logge
 		}
 
 		var matches []reconcile.Request
+
 		for _, p := range l.GetRevisions() {
 			for _, m := range ic.Spec.MatchImages {
-				if strings.HasPrefix(p.GetSource(), m.Prefix) {
+				if strings.HasPrefix(p.GetResolvedSource(), m.Prefix) {
 					log.Debug("Enqueuing provider revisions for image config", "provider-revision", p.GetName(), "imageConfig", ic.Name)
 					matches = append(matches, reconcile.Request{NamespacedName: types.NamespacedName{Name: p.GetName()}})
 				}
 			}
 		}
+
 		return matches
 	})
 }

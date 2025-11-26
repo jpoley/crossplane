@@ -20,12 +20,13 @@ package apiextensions
 import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/crossplane/crossplane/internal/controller/apiextensions/composition"
-	"github.com/crossplane/crossplane/internal/controller/apiextensions/controller"
-	"github.com/crossplane/crossplane/internal/controller/apiextensions/definition"
-	"github.com/crossplane/crossplane/internal/controller/apiextensions/offered"
-	"github.com/crossplane/crossplane/internal/controller/apiextensions/usage"
-	"github.com/crossplane/crossplane/internal/features"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/activationpolicy"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/composition"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/controller"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/definition"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/managed"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/offered"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/revision"
 )
 
 // Setup API extensions controllers.
@@ -34,14 +35,20 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 		return err
 	}
 
+	if err := revision.Setup(mgr, o); err != nil {
+		return err
+	}
+
 	if err := definition.Setup(mgr, o); err != nil {
 		return err
 	}
 
-	if o.Features.Enabled(features.EnableAlphaUsages) {
-		if err := usage.Setup(mgr, o); err != nil {
-			return err
-		}
+	if err := managed.Setup(mgr, o); err != nil {
+		return err
+	}
+
+	if err := activationpolicy.Setup(mgr, o); err != nil {
+		return err
 	}
 
 	return offered.Setup(mgr, o)

@@ -19,6 +19,7 @@ func TestLocalCacheExists(t *testing.T) {
 	type args struct {
 		image string
 	}
+
 	type want struct {
 		path string
 		err  error
@@ -32,7 +33,7 @@ func TestLocalCacheExists(t *testing.T) {
 		"Exists": {
 			reason: "Exists should return an empty path with no error if it exists",
 			args: args{
-				image: "xpkg.upbound.io/crossplane-contrib/provider-nop:v0.2.0",
+				image: "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.2.0",
 			},
 			want: want{
 				path: "",
@@ -42,10 +43,10 @@ func TestLocalCacheExists(t *testing.T) {
 		"DoesNotExist": {
 			reason: "Exists should return the path with no error",
 			args: args{
-				image: "xpkg.upbound.io/crossplane-contrib/provider-nop:v0.2.1",
+				image: "xpkg.crossplane.io/crossplane-contrib/provider-nop:v0.2.1",
 			},
 			want: want{
-				path: "testdata/cache/xpkg.upbound.io/crossplane-contrib/provider-nop@v0.2.1",
+				path: "testdata/cache/xpkg.crossplane.io/crossplane-contrib/provider-nop@v0.2.1",
 				err:  nil,
 			},
 		},
@@ -56,6 +57,7 @@ func TestLocalCacheExists(t *testing.T) {
 				fs:       fs,
 				cacheDir: "testdata/cache",
 			}
+
 			got, err := c.Exists(tc.args.image)
 			if diff := cmp.Diff(tc.want.path, got); diff != "" {
 				t.Errorf("%s\nExists(...): -want, +got:\n%s", tc.reason, diff)
@@ -98,6 +100,7 @@ func TestLocalCacheInit(t *testing.T) {
 		cacheDir string
 		fs       afero.Fs
 	}
+
 	cases := map[string]struct {
 		reason  string
 		args    args
@@ -149,11 +152,14 @@ func TestLocalCacheInit(t *testing.T) {
 func TestLocalCacheLoad(t *testing.T) {
 	type args struct {
 		cacheDir string
+		image    string
 	}
+
 	type want struct {
 		schemas []*unstructured.Unstructured
 		err     error
 	}
+
 	cases := map[string]struct {
 		reason string
 		args   args
@@ -161,7 +167,10 @@ func TestLocalCacheLoad(t *testing.T) {
 	}{
 		"Load": {
 			reason: "Load should load the schemas from the cache",
-			args:   args{cacheDir: "./testdata/crds"},
+			args: args{
+				cacheDir: "./testdata/crds",
+				image:    "xpkg.crossplane.io/provider-dummy:v1.0.0",
+			},
 			want: want{
 				schemas: []*unstructured.Unstructured{
 					{
@@ -193,10 +202,11 @@ func TestLocalCacheLoad(t *testing.T) {
 				cacheDir: tc.args.cacheDir,
 			}
 
-			got, err := c.Load()
+			got, err := c.Load(tc.args.image)
 			if diff := cmp.Diff(tc.want.schemas, got); diff != "" {
 				t.Errorf("%s\nLoad(...): -want, +got:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("%s\nLoad(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
@@ -210,9 +220,11 @@ func TestLocalCacheStore(t *testing.T) {
 		path    string
 		fs      afero.Fs
 	}
+
 	type want struct {
 		err error
 	}
+
 	cases := map[string]struct {
 		reason string
 		args   args
@@ -224,7 +236,7 @@ func TestLocalCacheStore(t *testing.T) {
 				schemas: [][]byte{
 					[]byte("apiVersion: apiextensions.k8s.io/v1beta1\nkind: CustomResourceDefinition\nmetadata:\n  name: test\n"),
 				},
-				path: "testdata/cache/xpkg.upbound.io/crossplane-contrib/dummy@v0.2.0",
+				path: "testdata/cache/xpkg.crossplane.io/crossplane-contrib/dummy@v0.2.0",
 				fs:   fs,
 			},
 			want: want{
@@ -245,6 +257,7 @@ func TestLocalCacheStore(t *testing.T) {
 
 			if tc.want.err == nil {
 				fPath := filepath.Join(tc.args.path, packageFileName)
+
 				info, err := fs.Stat(fPath)
 				if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 					t.Errorf("%s\nStore(...): -want error, +got error:\n%s", tc.reason, diff)

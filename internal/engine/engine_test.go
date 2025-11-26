@@ -106,15 +106,19 @@ func TestStartController(t *testing.T) {
 		mgr  manager.Manager
 		infs TrackingInformers
 		c    client.Client
+		uc   client.Client
 		opts []ControllerEngineOption
 	}
+
 	type args struct {
 		name string
 		opts []ControllerOption
 	}
+
 	type want struct {
 		err error
 	}
+
 	cases := map[string]struct {
 		reason string
 		params params
@@ -136,7 +140,7 @@ func TestStartController(t *testing.T) {
 			args: args{
 				name: "cool-controller",
 				opts: []ControllerOption{
-					WithNewControllerFn(func(_ string, _ manager.Manager, _ kcontroller.Options) (kcontroller.Controller, error) {
+					WithNewControllerFn(func(_ string, _ kcontroller.Options) (kcontroller.Controller, error) {
 						return nil, errors.New("boom")
 					}),
 				},
@@ -160,7 +164,7 @@ func TestStartController(t *testing.T) {
 			args: args{
 				name: "cool-controller",
 				opts: []ControllerOption{
-					WithNewControllerFn(func(_ string, _ manager.Manager, _ kcontroller.Options) (kcontroller.Controller, error) {
+					WithNewControllerFn(func(_ string, _ kcontroller.Options) (kcontroller.Controller, error) {
 						return &MockController{
 							MockStart: func(_ context.Context) error {
 								return errors.New("boom")
@@ -189,7 +193,7 @@ func TestStartController(t *testing.T) {
 			args: args{
 				name: "cool-controller",
 				opts: []ControllerOption{
-					WithNewControllerFn(func(_ string, _ manager.Manager, _ kcontroller.Options) (kcontroller.Controller, error) {
+					WithNewControllerFn(func(_ string, _ kcontroller.Options) (kcontroller.Controller, error) {
 						return &MockController{
 							MockStart: func(ctx context.Context) error {
 								<-ctx.Done()
@@ -212,7 +216,8 @@ func TestStartController(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.opts...)
+			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.uc, tc.params.opts...)
+
 			err := e.Start(tc.args.name, tc.args.opts...)
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.Start(...): -want error, +got error:\n%s", tc.reason, diff)
@@ -227,6 +232,7 @@ func TestStartController(t *testing.T) {
 			// Stop the controller. Will be a no-op if it never started.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+
 			err = e.Stop(ctx, tc.args.name)
 			if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.Stop(...): -want error, +got error:\n%s", tc.reason, diff)
@@ -240,6 +246,7 @@ func TestIsRunning(t *testing.T) {
 		mgr  manager.Manager
 		infs TrackingInformers
 		c    client.Client
+		uc   client.Client
 		opts []ControllerEngineOption
 	}
 
@@ -248,12 +255,15 @@ func TestIsRunning(t *testing.T) {
 		name string
 		opts []ControllerOption
 	}
+
 	type args struct {
 		name string
 	}
+
 	type want struct {
 		running bool
 	}
+
 	cases := map[string]struct {
 		reason    string
 		params    params
@@ -276,7 +286,7 @@ func TestIsRunning(t *testing.T) {
 			argsStart: argsStart{
 				name: "cool-controller",
 				opts: []ControllerOption{
-					WithNewControllerFn(func(_ string, _ manager.Manager, _ kcontroller.Options) (kcontroller.Controller, error) {
+					WithNewControllerFn(func(_ string, _ kcontroller.Options) (kcontroller.Controller, error) {
 						return &MockController{
 							MockStart: func(ctx context.Context) error {
 								<-ctx.Done()
@@ -308,7 +318,7 @@ func TestIsRunning(t *testing.T) {
 			argsStart: argsStart{
 				name: "cool-controller",
 				opts: []ControllerOption{
-					WithNewControllerFn(func(_ string, _ manager.Manager, _ kcontroller.Options) (kcontroller.Controller, error) {
+					WithNewControllerFn(func(_ string, _ kcontroller.Options) (kcontroller.Controller, error) {
 						return &MockController{
 							MockStart: func(_ context.Context) error {
 								return errors.New("boom")
@@ -328,7 +338,7 @@ func TestIsRunning(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.opts...)
+			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.uc, tc.params.opts...)
 			_ = e.Start(tc.args.name, tc.argsStart.opts...)
 
 			// Give the start goroutine a little time to fail.
@@ -342,6 +352,7 @@ func TestIsRunning(t *testing.T) {
 			// Stop the controller. Will be a no-op if it never started.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+
 			_ = e.Stop(ctx, tc.args.name)
 
 			// IsRunning should always be false after the controller is stopped.
@@ -358,15 +369,19 @@ func TestStopController(t *testing.T) {
 		mgr  manager.Manager
 		infs TrackingInformers
 		c    client.Client
+		uc   client.Client
 		opts []ControllerEngineOption
 	}
+
 	type args struct {
 		ctx  context.Context
 		name string
 	}
+
 	type want struct {
 		err error
 	}
+
 	cases := map[string]struct {
 		reason string
 		params params
@@ -388,6 +403,9 @@ func TestStopController(t *testing.T) {
 					MockActiveInformers: func() []schema.GroupVersionKind {
 						return nil
 					},
+					MockGetInformer: func(_ context.Context, _ client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
+						return nil, nil
+					},
 				},
 			},
 			args: args{
@@ -405,8 +423,9 @@ func TestStopController(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.opts...)
-			err := e.Start(tc.args.name, WithNewControllerFn(func(_ string, _ manager.Manager, _ kcontroller.Options) (kcontroller.Controller, error) {
+			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.uc, tc.params.opts...)
+
+			err := e.Start(tc.args.name, WithNewControllerFn(func(_ string, _ kcontroller.Options) (kcontroller.Controller, error) {
 				return &MockController{
 					MockStart: func(ctx context.Context) error {
 						<-ctx.Done()
@@ -425,7 +444,8 @@ func TestStopController(t *testing.T) {
 			u := &unstructured.Unstructured{}
 			u.SetAPIVersion("test.crossplane.io/v1")
 			u.SetKind("Composed")
-			err = e.StartWatches(tc.args.name, WatchFor(u, WatchTypeComposedResource, nil))
+
+			err = e.StartWatches(tc.args.ctx, tc.args.name, WatchFor(u, WatchTypeComposedResource, nil))
 			if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.StartWatches(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
@@ -450,6 +470,7 @@ func TestStartWatches(t *testing.T) {
 		mgr  manager.Manager
 		infs TrackingInformers
 		c    client.Client
+		uc   client.Client
 		opts []ControllerEngineOption
 	}
 	// We need to control how we start the controller.
@@ -457,14 +478,18 @@ func TestStartWatches(t *testing.T) {
 		name string
 		opts []ControllerOption
 	}
+
 	type args struct {
+		ctx  context.Context
 		name string
 		ws   []Watch
 	}
+
 	type want struct {
 		err     error
 		watches []WatchID
 	}
+
 	cases := map[string]struct {
 		reason    string
 		params    params
@@ -493,12 +518,15 @@ func TestStartWatches(t *testing.T) {
 							},
 						}
 					},
+					MockGetInformer: func(_ context.Context, _ client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
+						return nil, nil
+					},
 				},
 			},
 			argsStart: argsStart{
 				name: "cool-controller",
 				opts: []ControllerOption{
-					WithNewControllerFn(func(_ string, _ manager.Manager, _ kcontroller.Options) (kcontroller.Controller, error) {
+					WithNewControllerFn(func(_ string, _ kcontroller.Options) (kcontroller.Controller, error) {
 						return &MockController{
 							MockStart: func(ctx context.Context) error {
 								<-ctx.Done()
@@ -547,12 +575,15 @@ func TestStartWatches(t *testing.T) {
 							},
 						}
 					},
+					MockGetInformer: func(_ context.Context, _ client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
+						return nil, nil
+					},
 				},
 			},
 			argsStart: argsStart{
 				name: "cool-controller",
 				opts: []ControllerOption{
-					WithNewControllerFn(func(_ string, _ manager.Manager, _ kcontroller.Options) (kcontroller.Controller, error) {
+					WithNewControllerFn(func(_ string, _ kcontroller.Options) (kcontroller.Controller, error) {
 						return &MockController{
 							MockStart: func(ctx context.Context) error {
 								<-ctx.Done()
@@ -617,20 +648,21 @@ func TestStartWatches(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.opts...)
+			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.uc, tc.params.opts...)
+
 			err := e.Start(tc.argsStart.name, tc.argsStart.opts...)
 			if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
 				t.Fatalf("\n%s\ne.Start(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
 
-			err = e.StartWatches(tc.args.name, tc.args.ws...)
+			err = e.StartWatches(tc.args.ctx, tc.args.name, tc.args.ws...)
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.StartWatches(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
 
 			// Start the same watches again to exercise the code that ensures we
 			// only add each watch once.
-			err = e.StartWatches(tc.args.name, tc.args.ws...)
+			err = e.StartWatches(tc.args.ctx, tc.args.name, tc.args.ws...)
 			if diff := cmp.Diff(tc.want.err, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.StartWatches(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
@@ -639,6 +671,7 @@ func TestStartWatches(t *testing.T) {
 			if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.GetWatches(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.watches, watches,
 				cmpopts.EquateEmpty(),
 				cmpopts.SortSlices(func(a, b WatchID) bool { return fmt.Sprintf("%s", a) > fmt.Sprintf("%s", b) }),
@@ -649,6 +682,7 @@ func TestStartWatches(t *testing.T) {
 			// Stop the controller. Will be a no-op if it never started.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+
 			err = e.Stop(ctx, tc.args.name)
 			if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.Stop(...): -want error, +got error:\n%s", tc.reason, diff)
@@ -662,18 +696,22 @@ func TestStopWatches(t *testing.T) {
 		mgr  manager.Manager
 		infs TrackingInformers
 		c    client.Client
+		uc   client.Client
 		opts []ControllerEngineOption
 	}
+
 	type args struct {
 		ctx  context.Context
 		name string
 		ws   []WatchID
 	}
+
 	type want struct {
 		stopped int
 		err     error
 		watches []WatchID
 	}
+
 	cases := map[string]struct {
 		reason string
 		params params
@@ -694,6 +732,9 @@ func TestStopWatches(t *testing.T) {
 				infs: &MockTrackingInformers{
 					MockActiveInformers: func() []schema.GroupVersionKind {
 						return nil
+					},
+					MockGetInformer: func(_ context.Context, _ client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
+						return nil, nil
 					},
 				},
 			},
@@ -749,6 +790,9 @@ func TestStopWatches(t *testing.T) {
 					MockActiveInformers: func() []schema.GroupVersionKind {
 						return nil
 					},
+					MockGetInformer: func(_ context.Context, _ client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
+						return nil, nil
+					},
 				},
 			},
 			args: args{
@@ -795,6 +839,9 @@ func TestStopWatches(t *testing.T) {
 					MockActiveInformers: func() []schema.GroupVersionKind {
 						return nil
 					},
+					MockGetInformer: func(_ context.Context, _ client.Object, _ ...cache.InformerGetOption) (cache.Informer, error) {
+						return nil, nil
+					},
 				},
 			},
 			args: args{
@@ -840,8 +887,9 @@ func TestStopWatches(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.opts...)
-			err := e.Start(tc.args.name, WithNewControllerFn(func(_ string, _ manager.Manager, _ kcontroller.Options) (kcontroller.Controller, error) {
+			e := New(tc.params.mgr, tc.params.infs, tc.params.c, tc.params.uc, tc.params.opts...)
+
+			err := e.Start(tc.args.name, WithNewControllerFn(func(_ string, _ kcontroller.Options) (kcontroller.Controller, error) {
 				return &MockController{
 					MockStart: func(ctx context.Context) error {
 						<-ctx.Done()
@@ -860,7 +908,8 @@ func TestStopWatches(t *testing.T) {
 			u1 := &unstructured.Unstructured{}
 			u1.SetAPIVersion("test.crossplane.io/v1")
 			u1.SetKind("Resource")
-			err = e.StartWatches(tc.args.name,
+
+			err = e.StartWatches(tc.args.ctx, tc.args.name,
 				WatchFor(u1, WatchTypeComposedResource, nil),
 				WatchFor(u1, WatchTypeCompositeResource, nil),
 			)
@@ -872,6 +921,7 @@ func TestStopWatches(t *testing.T) {
 			if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.StopWatches(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.stopped, stopped); diff != "" {
 				t.Errorf("\n%s\ne.StopWatches(...): -want stopped, +got stopped:\n%s", tc.reason, diff)
 			}
@@ -880,6 +930,7 @@ func TestStopWatches(t *testing.T) {
 			if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.GetWatches(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
+
 			if diff := cmp.Diff(tc.want.watches, watches,
 				cmpopts.EquateEmpty(),
 				cmpopts.SortSlices(func(a, b WatchID) bool { return fmt.Sprintf("%s", a) > fmt.Sprintf("%s", b) }),

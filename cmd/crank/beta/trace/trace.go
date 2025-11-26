@@ -31,14 +31,15 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 
-	"github.com/crossplane/crossplane/apis/pkg"
-	"github.com/crossplane/crossplane/cmd/crank/beta/trace/internal/printer"
-	"github.com/crossplane/crossplane/cmd/crank/beta/trace/internal/resource"
-	"github.com/crossplane/crossplane/cmd/crank/beta/trace/internal/resource/xpkg"
-	"github.com/crossplane/crossplane/cmd/crank/beta/trace/internal/resource/xrm"
+	"github.com/crossplane/crossplane/v2/apis/pkg"
+	"github.com/crossplane/crossplane/v2/cmd/crank/beta/trace/internal/printer"
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/resource"
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/resource/xpkg"
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/resource/xrm"
+	"github.com/crossplane/crossplane/v2/cmd/crank/internal"
 )
 
 const (
@@ -58,12 +59,12 @@ const (
 
 // Cmd builds the trace tree for a Crossplane resource.
 type Cmd struct {
-	Resource string `arg:"" help:"Kind of the Crossplane resource, accepts the 'TYPE[.VERSION][.GROUP][/NAME]' format."`
-	Name     string `arg:"" help:"Name of the Crossplane resource, can be passed as part of the resource too."          optional:""`
+	Resource string `arg:"" help:"Kind of the Crossplane resource, accepts the 'TYPE[.VERSION][.GROUP][/NAME]' format." predictor:"k8s_resource"`
+	Name     string `arg:"" help:"Name of the Crossplane resource, can be passed as part of the resource too."          optional:""              predictor:"k8s_resource_name"`
 
 	// TODO(phisco): add support for all the usual kubectl flags; configFlags := genericclioptions.NewConfigFlags(true).AddFlags(...)
-	Context                   string `default:""                                    help:"Kubernetes context."                         name:"context"                                                             short:"c"`
-	Namespace                 string `default:""                                    help:"Namespace of the resource."                  name:"namespace"                                                           short:"n"`
+	Context                   string `default:""                                    help:"Kubernetes context."                         name:"context"                                                             predictor:"context"              short:"c"`
+	Namespace                 string `default:""                                    help:"Namespace of the resource."                  name:"namespace"                                                           predictor:"namespace"            short:"n"`
 	Output                    string `default:"default"                             enum:"default,wide,json,dot"                       help:"Output format. One of: default, wide, json, dot."                    name:"output"                    short:"o"`
 	ShowConnectionSecrets     bool   `help:"Show connection secrets in the output." name:"show-connection-secrets"                     short:"s"`
 	ShowPackageDependencies   string `default:"unique"                              enum:"unique,all,none"                             help:"Show package dependencies in the output. One of: unique, all, none." name:"show-package-dependencies"`
@@ -86,7 +87,7 @@ Examples:
   # Trace a MyKind resource (mykinds.example.org/v1alpha1) named 'my-res' in the namespace 'my-ns'
   crossplane beta trace mykind my-res -n my-ns
 
-  # Output wide format, showing full errors and condition messages, and other useful info 
+  # Output wide format, showing full errors and condition messages, and other useful info
   # depending on the target type, e.g. composed resources names for composite resources or image used for packages
   crossplane beta trace mykind my-res -n my-ns -o wide
 
@@ -114,6 +115,7 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 	if err != nil {
 		return errors.Wrap(err, errInitPrinter)
 	}
+
 	logger.Debug("Built printer", "output", c.Output)
 
 	clientconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
@@ -134,6 +136,7 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 	if kubeconfig.QPS == 0 {
 		kubeconfig.QPS = 20
 	}
+
 	if kubeconfig.Burst == 0 {
 		kubeconfig.Burst = 30
 	}
@@ -165,7 +168,7 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 		return errors.Wrap(err, errInvalidResourceAndName)
 	}
 
-	mapping, err := resource.MappingFor(rmapper, res)
+	mapping, err := internal.MappingFor(rmapper, res)
 	if err != nil {
 		return errors.Wrap(err, errGetMapping)
 	}
@@ -184,6 +187,7 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 				return errors.Wrap(err, errKubeNamespace)
 			}
 		}
+
 		logger.Debug("Requested resource is namespaced", "namespace", namespace)
 		rootRef.Namespace = namespace
 	}
@@ -197,9 +201,11 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 	}
 
 	var treeClient resource.TreeClient
+
 	switch {
 	case xpkg.IsPackageType(mapping.GroupVersionKind.GroupKind()):
 		logger.Debug("Requested resource is an Package")
+
 		treeClient, err = xpkg.NewClient(client,
 			xpkg.WithDependencyOutput(xpkg.DependencyOutput(c.ShowPackageDependencies)),
 			xpkg.WithPackageRuntimeConfigs(c.ShowPackageRuntimeConfigs),
@@ -209,6 +215,7 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 		}
 	default:
 		logger.Debug("Requested resource is not a package, assumed to be an XR, XRC or MR")
+
 		treeClient, err = xrm.NewClient(client,
 			xrm.WithConnectionSecrets(c.ShowConnectionSecrets),
 			xrm.WithConcurrency(c.Concurrency),
@@ -217,6 +224,7 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 			return errors.Wrap(err, errInitKubeClient)
 		}
 	}
+
 	logger.Debug("Built client")
 
 	root, err = treeClient.GetResourceTree(ctx, root)
@@ -224,6 +232,7 @@ func (c *Cmd) Run(k *kong.Context, logger logging.Logger) error {
 		logger.Debug(errGetResource, "error", err)
 		return errors.Wrap(err, errGetResource)
 	}
+
 	logger.Debug("Got resource tree", "root", root)
 
 	// Print resources

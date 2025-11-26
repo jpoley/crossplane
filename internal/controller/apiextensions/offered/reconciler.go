@@ -35,23 +35,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/crossplane/crossplane-runtime/pkg/connection"
-	"github.com/crossplane/crossplane-runtime/pkg/controller"
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/event"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/conditions"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/controller"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 
-	v1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
-	secretsv1alpha1 "github.com/crossplane/crossplane/apis/secrets/v1alpha1"
-	"github.com/crossplane/crossplane/internal/controller/apiextensions/claim"
-	apiextensionscontroller "github.com/crossplane/crossplane/internal/controller/apiextensions/controller"
-	"github.com/crossplane/crossplane/internal/engine"
-	"github.com/crossplane/crossplane/internal/features"
-	"github.com/crossplane/crossplane/internal/names"
-	"github.com/crossplane/crossplane/internal/xcrd"
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/claim"
+	apiextensionscontroller "github.com/crossplane/crossplane/v2/internal/controller/apiextensions/controller"
+	"github.com/crossplane/crossplane/v2/internal/engine"
+	"github.com/crossplane/crossplane/v2/internal/features"
+	"github.com/crossplane/crossplane/v2/internal/names"
+	"github.com/crossplane/crossplane/v2/internal/ssa"
+	"github.com/crossplane/crossplane/v2/internal/xcrd"
 )
 
 const (
@@ -69,6 +68,7 @@ const (
 	errStartController = "cannot start composite resource claim controller"
 	errStopController  = "cannot stop composite resource claim controller"
 	errStartWatches    = "cannot start composite resource claim controller watches"
+	errAddIndex        = "cannot add composite resource claim index"
 	errAddFinalizer    = "cannot add composite resource claim finalizer"
 	errRemoveFinalizer = "cannot remove composite resource claim finalizer"
 	errDeleteCRD       = "cannot delete composite resource claim CustomResourceDefinition"
@@ -90,12 +90,15 @@ const (
 )
 
 // A ControllerEngine can start and stop Kubernetes controllers on demand.
+//
+//nolint:interfacebloat // This interface is internal and the methods are all necessary for controller management
 type ControllerEngine interface {
 	Start(name string, o ...engine.ControllerOption) error
 	Stop(ctx context.Context, name string) error
 	IsRunning(name string) bool
-	StartWatches(name string, ws ...engine.Watch) error
-	GetClient() client.Client
+	StartWatches(ctx context.Context, name string, ws ...engine.Watch) error
+	GetCached() client.Client
+	GetFieldIndexer() client.FieldIndexer
 }
 
 // A NopEngine does nothing.
@@ -111,10 +114,10 @@ func (e *NopEngine) Stop(_ context.Context, _ string) error { return nil }
 func (e *NopEngine) IsRunning(_ string) bool { return true }
 
 // StartWatches does nothing.
-func (e *NopEngine) StartWatches(_ string, _ ...engine.Watch) error { return nil }
+func (e *NopEngine) StartWatches(_ context.Context, _ string, _ ...engine.Watch) error { return nil }
 
-// GetClient returns a nil client.
-func (e *NopEngine) GetClient() client.Client {
+// GetCached returns a nil client.
+func (e *NopEngine) GetCached() client.Client {
 	return nil
 }
 
@@ -147,7 +150,7 @@ func Setup(mgr ctrl.Manager, o apiextensionscontroller.Options) error {
 
 	r := NewReconciler(NewClientApplicator(mgr.GetClient()),
 		WithLogger(o.Logger.WithValues("controller", name)),
-		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
+		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name), o.EventFilterFunctions...)),
 		WithControllerEngine(o.ControllerEngine),
 		WithOptions(o))
 
@@ -156,7 +159,7 @@ func Setup(mgr ctrl.Manager, o apiextensionscontroller.Options) error {
 		For(&v1.CompositeResourceDefinition{}, builder.WithPredicates(resource.NewPredicates(OffersClaim()))).
 		Owns(&extv1.CustomResourceDefinition{}, builder.WithPredicates(resource.NewPredicates(IsClaimCRD()))).
 		WithOptions(o.ForControllerRuntime()).
-		Complete(ratelimiter.NewReconciler(name, errors.WithSilentRequeueOnConflict(r), o.GlobalRateLimiter))
+		Complete(errors.WithSilentRequeueOnConflict(r))
 }
 
 // ReconcilerOption is used to configure the Reconciler.
@@ -222,13 +225,14 @@ func NewReconciler(ca resource.ClientApplicator, opts ...ReconcilerOption) *Reco
 
 		claim: definition{
 			CRDRenderer: CRDRenderFn(xcrd.ForCompositeResourceClaim),
-			Finalizer:   resource.NewAPIFinalizer(ca, finalizer),
+			Finalizer:   resource.NewAPIFinalizer(ca.Client, finalizer),
 		},
 
 		engine: &NopEngine{},
 
-		log:    logging.NewNopLogger(),
-		record: event.NewNopRecorder(),
+		log:        logging.NewNopLogger(),
+		record:     event.NewNopRecorder(),
+		conditions: conditions.ObservedGenerationPropagationManager{},
 
 		options: apiextensionscontroller.Options{
 			Options: controller.DefaultOptions(),
@@ -238,6 +242,7 @@ func NewReconciler(ca resource.ClientApplicator, opts ...ReconcilerOption) *Reco
 	for _, f := range opts {
 		f(r)
 	}
+
 	return r
 }
 
@@ -258,8 +263,9 @@ type Reconciler struct {
 
 	engine ControllerEngine
 
-	log    logging.Logger
-	record event.Recorder
+	log        logging.Logger
+	record     event.Recorder
+	conditions conditions.Manager
 
 	options apiextensionscontroller.Options
 }
@@ -279,6 +285,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, errors.Wrap(resource.IgnoreNotFound(err), errGetXRD)
 	}
 
+	status := r.conditions.For(d)
+
 	log = log.WithValues(
 		"uid", d.GetUID(),
 		"version", d.GetResourceVersion(),
@@ -289,17 +297,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if err != nil {
 		err = errors.Wrap(err, errRenderCRD)
 		r.record.Event(d, event.Warning(reasonRenderCRD, err))
+
 		return reconcile.Result{}, err
 	}
 
 	if meta.WasDeleted(d) {
-		d.Status.SetConditions(v1.TerminatingClaim())
+		status.MarkConditions(v1.TerminatingClaim())
+
 		if err := r.client.Status().Update(ctx, d); err != nil {
 			if kerrors.IsConflict(err) {
 				return reconcile.Result{Requeue: true}, nil
 			}
+
 			err = errors.Wrap(err, errUpdateStatus)
 			r.record.Event(d, event.Warning(reasonRedactXRC, err))
+
 			return reconcile.Result{}, err
 		}
 
@@ -307,6 +319,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		if err := r.client.Get(ctx, nn, crd); resource.IgnoreNotFound(err) != nil {
 			err = errors.Wrap(err, errGetCRD)
 			r.record.Event(d, event.Warning(reasonRedactXRC, err))
+
 			return reconcile.Result{}, err
 		}
 
@@ -324,16 +337,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if err := r.engine.Stop(ctx, claim.ControllerName(d.GetName())); err != nil {
 				err = errors.Wrap(err, errStopController)
 				r.record.Event(d, event.Warning(reasonRedactXRC, err))
+
 				return reconcile.Result{}, err
 			}
+
 			log.Debug("Stopped composite resource claim controller")
 
 			if err := r.claim.RemoveFinalizer(ctx, d); err != nil {
 				if kerrors.IsConflict(err) {
 					return reconcile.Result{Requeue: true}, nil
 				}
+
 				err = errors.Wrap(err, errRemoveFinalizer)
 				r.record.Event(d, event.Warning(reasonRedactXRC, err))
+
 				return reconcile.Result{}, err
 			}
 
@@ -345,9 +362,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 		l := &kunstructured.UnstructuredList{}
 		l.SetGroupVersionKind(d.GetClaimGroupVersionKind())
+
 		if err := r.client.List(ctx, l); resource.Ignore(kmeta.IsNoMatchError, err) != nil {
 			err = errors.Wrap(err, errListCRs)
 			r.record.Event(d, event.Warning(reasonRedactXRC, err))
+
 			return reconcile.Result{}, err
 		}
 
@@ -364,6 +383,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				if err := r.client.Delete(ctx, &l.Items[i]); resource.IgnoreNotFound(err) != nil {
 					err = errors.Wrap(err, errDeleteCR)
 					r.record.Event(d, event.Warning(reasonRedactXRC, err))
+
 					return reconcile.Result{}, err
 				}
 			}
@@ -373,6 +393,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			// because we won't be requeued implicitly when the CRs
 			// are deleted.
 			r.record.Event(d, event.Normal(reasonRedactXRC, waitCRDelete))
+
 			return reconcile.Result{Requeue: true}, nil
 		}
 
@@ -381,15 +402,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		if err := r.engine.Stop(ctx, claim.ControllerName(d.GetName())); err != nil {
 			err = errors.Wrap(err, errStopController)
 			r.record.Event(d, event.Warning(reasonRedactXRC, err))
+
 			return reconcile.Result{}, err
 		}
+
 		log.Debug("Stopped composite resource claim controller")
 
 		if err := r.client.Delete(ctx, crd); resource.IgnoreNotFound(err) != nil {
 			err = errors.Wrap(err, errDeleteCRD)
 			r.record.Event(d, event.Warning(reasonRedactXRC, err))
+
 			return reconcile.Result{}, err
 		}
+
 		r.record.Event(d, event.Normal(reasonRedactXRC, fmt.Sprintf("Deleted composite resource claim CustomResourceDefinition: %s", crd.GetName())))
 
 		// We should be requeued implicitly because we're watching the
@@ -403,20 +428,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		if kerrors.IsConflict(err) {
 			return reconcile.Result{Requeue: true}, nil
 		}
+
 		err = errors.Wrap(err, errAddFinalizer)
 		r.record.Event(d, event.Warning(reasonOfferXRC, err))
+
 		return reconcile.Result{}, err
 	}
 
 	origRV := ""
-	if err := r.client.Apply(ctx, crd, resource.MustBeControllableBy(d.GetUID()), resource.StoreCurrentRV(&origRV)); err != nil {
+	if err := r.client.Applicator.Apply(ctx, crd, resource.MustBeControllableBy(d.GetUID()), resource.StoreCurrentRV(&origRV)); err != nil {
 		if kerrors.IsConflict(err) {
 			return reconcile.Result{Requeue: true}, nil
 		}
+
 		err = errors.Wrap(err, errApplyCRD)
 		r.record.Event(d, event.Warning(reasonOfferXRC, err))
+
 		return reconcile.Result{}, err
 	}
+
 	if crd.GetResourceVersion() != origRV {
 		r.record.Event(d, event.Normal(reasonOfferXRC, fmt.Sprintf("Applied composite resource claim CustomResourceDefinition: %s", crd.GetName())))
 	}
@@ -424,91 +454,98 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if !xcrd.IsEstablished(crd.Status) {
 		log.Debug(waitCRDEstablish)
 		r.record.Event(d, event.Normal(reasonOfferXRC, waitCRDEstablish))
+
 		return reconcile.Result{Requeue: true}, nil
 	}
 
 	o := []claim.ReconcilerOption{
 		claim.WithLogger(log.WithValues("controller", claim.ControllerName(d.GetName()))),
 		claim.WithRecorder(r.record.WithAnnotations("controller", claim.ControllerName(d.GetName()))),
-		claim.WithPollInterval(r.options.PollInterval),
 	}
 
 	// We only want to use the server-side XR syncer if the relevant feature
 	// flag is enabled. Otherwise, we start claim reconcilers with the default
 	// client-side syncer. If we use a server-side syncer we also need to handle
 	// upgrading fields that were previously managed using client-side apply.
-	if r.options.Features.Enabled(features.EnableAlphaClaimSSA) {
+	if r.options.Features.Enabled(features.EnableBetaClaimSSA) {
 		o = append(o,
-			claim.WithCompositeSyncer(claim.NewServerSideCompositeSyncer(r.engine.GetClient(), names.NewNameGenerator(r.engine.GetClient()))),
-			claim.WithManagedFieldsUpgrader(claim.NewPatchingManagedFieldsUpgrader(r.engine.GetClient())),
+			claim.WithCompositeSyncer(claim.NewServerSideCompositeSyncer(r.engine.GetCached(), names.NewNameGenerator(r.engine.GetCached()))),
+			claim.WithManagedFieldsUpgrader(ssa.NewPatchingManagedFieldsUpgrader(
+				r.engine.GetCached(),
+				ssa.ExactMatch(claim.FieldOwnerXR),
+			)),
 		)
 	}
 
-	// We only want to enable ExternalSecretStore support if the relevant
-	// feature flag is enabled. Otherwise, we start the Claim reconcilers with
-	// their default Connection Propagator.
-	if r.options.Features.Enabled(features.EnableAlphaExternalSecretStores) {
-		pc := claim.ConnectionPropagatorChain{
-			claim.NewAPIConnectionPropagator(r.engine.GetClient()),
-			connection.NewDetailsManager(r.engine.GetClient(), secretsv1alpha1.StoreConfigGroupVersionKind, connection.WithTLSConfig(r.options.ESSOptions.TLSConfig)),
-		}
-
-		o = append(o, claim.WithConnectionPropagator(pc), claim.WithConnectionUnpublisher(
-			claim.NewSecretStoreConnectionUnpublisher(connection.NewDetailsManager(r.engine.GetClient(),
-				secretsv1alpha1.StoreConfigGroupVersionKind, connection.WithTLSConfig(r.options.ESSOptions.TLSConfig)))))
-	}
-
 	observed := d.Status.Controllers.CompositeResourceClaimTypeRef
+
 	desired := v1.TypeReferenceTo(d.GetClaimGroupVersionKind())
 	if observed.APIVersion != "" && observed != desired {
 		if err := r.engine.Stop(ctx, claim.ControllerName(d.GetName())); err != nil {
 			err = errors.Wrap(err, errStopController)
 			r.record.Event(d, event.Warning(reasonOfferXRC, err))
+
 			return reconcile.Result{}, err
 		}
+
 		log.Debug("Referenceable version changed; stopped composite resource claim controller",
 			"observed-version", observed.APIVersion,
 			"desired-version", desired.APIVersion)
 	}
 
-	if r.engine.IsRunning(claim.ControllerName(d.GetName())) {
-		log.Debug("Composite resource claim controller is running")
-		d.Status.SetConditions(v1.WatchingClaim())
-		return reconcile.Result{Requeue: false}, errors.Wrap(r.client.Status().Update(ctx, d), errUpdateStatus)
+	// Add an index to the controller engine's client.
+	if indexer := r.engine.GetFieldIndexer(); indexer != nil {
+		if err := indexer.IndexField(ctx, &v1.CompositeResourceDefinition{}, claim.XRDByCompositeGVKIndex(), claim.IndexXRDByCompositeGVK()); err != nil {
+			log.Debug(errAddIndex, "error", err)
+		}
 	}
 
-	cr := claim.NewReconciler(r.engine.GetClient(),
-		resource.CompositeClaimKind(d.GetClaimGroupVersionKind()),
-		resource.CompositeKind(d.GetCompositeGroupVersionKind()), o...)
+	controllerName := claim.ControllerName(d.GetName())
+	gvkClaim := d.GetClaimGroupVersionKind()
+	gvkXR := d.GetCompositeGroupVersionKind()
+
+	cr := claim.NewReconciler(r.engine.GetCached(), gvkClaim, gvkXR, o...)
 
 	ko := r.options.ForControllerRuntime()
-	ko.Reconciler = ratelimiter.NewReconciler(claim.ControllerName(d.GetName()), errors.WithSilentRequeueOnConflict(cr), r.options.GlobalRateLimiter)
+	ko.Reconciler = errors.WithSilentRequeueOnConflict(cr)
 
-	if err := r.engine.Start(claim.ControllerName(d.GetName()), engine.WithRuntimeOptions(ko)); err != nil {
+	// Start is idempotent - it's a no-op if the controller is already running.
+	// We call it every reconcile to ensure the controller is started, even after
+	// transient failures.
+	if !r.engine.IsRunning(controllerName) {
+		log.Debug("Starting composite resource claim controller")
+	}
+	if err := r.engine.Start(controllerName, engine.WithRuntimeOptions(ko)); err != nil {
 		err = errors.Wrap(err, errStartController)
 		r.record.Event(d, event.Warning(reasonOfferXRC, err))
+
 		return reconcile.Result{}, err
 	}
-	log.Debug("Started composite resource claim controller")
 
 	// These must be *unstructured.Unstructured, not e.g. *claim.Unstructured.
 	// controller-runtime doesn't support watching types that satisfy the
 	// runtime.Unstructured interface - only *unstructured.Unstructured.
 	cm := &kunstructured.Unstructured{}
-	cm.SetGroupVersionKind(d.GetClaimGroupVersionKind())
-	xr := &kunstructured.Unstructured{}
-	xr.SetGroupVersionKind(d.GetCompositeGroupVersionKind())
+	cm.SetGroupVersionKind(gvkClaim)
 
-	if err := r.engine.StartWatches(claim.ControllerName(d.GetName()),
+	xr := &kunstructured.Unstructured{}
+	xr.SetGroupVersionKind(gvkXR)
+
+	// StartWatches is idempotent - it only starts watches that don't already
+	// exist. We call it every reconcile to ensure watches are started, even if
+	// they failed transiently on a previous attempt.
+	if err := r.engine.StartWatches(ctx, controllerName,
 		engine.WatchFor(cm, engine.WatchTypeClaim, &handler.EnqueueRequestForObject{}),
 		engine.WatchFor(xr, engine.WatchTypeCompositeResource, &EnqueueRequestForClaim{}),
 	); err != nil {
 		err = errors.Wrap(err, errStartWatches)
 		r.record.Event(d, event.Warning(reasonOfferXRC, err))
+
 		return reconcile.Result{}, err
 	}
 
-	d.Status.Controllers.CompositeResourceClaimTypeRef = v1.TypeReferenceTo(d.GetClaimGroupVersionKind())
-	d.Status.SetConditions(v1.WatchingClaim())
+	d.Status.Controllers.CompositeResourceClaimTypeRef = v1.TypeReferenceTo(gvkClaim)
+	status.MarkConditions(v1.WatchingClaim())
+
 	return reconcile.Result{Requeue: false}, errors.Wrap(r.client.Status().Update(ctx, d), errUpdateStatus)
 }

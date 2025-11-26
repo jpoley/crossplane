@@ -20,18 +20,18 @@ import (
 	"context"
 	"fmt"
 
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/claim"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/unstructured/composite"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/fieldpath"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/claim"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/unstructured/composite"
 
-	"github.com/crossplane/crossplane/internal/names"
-	"github.com/crossplane/crossplane/internal/xcrd"
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	"github.com/crossplane/crossplane/v2/internal/names"
+	"github.com/crossplane/crossplane/v2/internal/xcrd"
 )
 
 // Error strings.
@@ -48,102 +48,6 @@ const (
 	FieldOwnerXR = "apiextensions.crossplane.io/claim"
 )
 
-// A NopManagedFieldsUpgrader does nothing.
-type NopManagedFieldsUpgrader struct{}
-
-// Upgrade does nothing.
-func (u *NopManagedFieldsUpgrader) Upgrade(_ context.Context, _ client.Object, _ string) error {
-	return nil
-}
-
-// A PatchingManagedFieldsUpgrader uses a JSON patch to upgrade an object's
-// managed fields from client-side to server-side apply. The upgrade is a no-op
-// if the object does not need upgrading.
-type PatchingManagedFieldsUpgrader struct {
-	client client.Writer
-}
-
-// NewPatchingManagedFieldsUpgrader returns a ManagedFieldsUpgrader that uses a
-// JSON patch to upgrade and object's managed fields from client-side to
-// server-side apply.
-func NewPatchingManagedFieldsUpgrader(w client.Writer) *PatchingManagedFieldsUpgrader {
-	return &PatchingManagedFieldsUpgrader{client: w}
-}
-
-// Upgrade the supplied object's field managers from client-side to server-side
-// apply.
-//
-// This is a multi-step process.
-//
-// Step 1: All fields are owned by either manager 'crossplane', operation
-// 'Update' or manager 'apiextensions.crossplane.io/composite', operation
-// 'Apply'. This represents all fields set by the claim or XR controller up to
-// this point.
-//
-// Step 2: Upgrade is called for the first time. We delete all field managers.
-//
-// Step 3: The claim controller server-side applies its fully specified intent
-// as field manager 'apiextensions.crossplane.io/claim'. This becomes the
-// manager of all the fields that are part of the claim controller's fully
-// specified intent. All existing fields the claim controller didn't specify
-// become owned by a special manager - 'before-first-apply', operation 'Update'.
-//
-// Step 4: Upgrade is called for the second time. It deletes the
-// 'before-first-apply' field manager entry. Only the claim field manager
-// remains.
-//
-// Step 5: Eventually the XR reconciler updates a field (e.g. spec.resourceRefs)
-// and becomes owner of that field.
-func (u *PatchingManagedFieldsUpgrader) Upgrade(ctx context.Context, obj client.Object, ssaManager string) error {
-	// The XR doesn't exist, nothing to upgrade.
-	if !meta.WasCreated(obj) {
-		return nil
-	}
-
-	foundSSA := false
-	foundBFA := false
-	idxBFA := -1
-
-	for i, e := range obj.GetManagedFields() {
-		if e.Manager == ssaManager {
-			foundSSA = true
-		}
-		if e.Manager == "before-first-apply" {
-			foundBFA = true
-			idxBFA = i
-		}
-	}
-
-	switch {
-	// If our SSA field manager exists and the before-first-apply field manager
-	// doesn't, we've already done the upgrade. Don't do it again.
-	case foundSSA && !foundBFA:
-		return nil
-
-	// We found our SSA field manager but also before-first-apply. It should now
-	// be safe to delete before-first-apply.
-	case foundSSA && foundBFA:
-		p := []byte(fmt.Sprintf(`[
-			{"op":"remove","path":"/metadata/managedFields/%d"},
-			{"op":"replace","path":"/metadata/resourceVersion","value":"%s"}
-		]`, idxBFA, obj.GetResourceVersion()))
-		return errors.Wrap(resource.IgnoreNotFound(u.client.Patch(ctx, obj, client.RawPatch(types.JSONPatchType, p))), "cannot remove before-first-apply from field managers")
-
-	// We didn't find our SSA field manager or the before-first-apply field
-	// manager. This means we haven't started the upgrade. The first thing we
-	// want to do is clear all managed fields. After we do this we'll let our
-	// SSA field manager apply the fields it cares about. The result will be
-	// that our SSA field manager shares ownership with a new manager named
-	// 'before-first-apply'.
-	default:
-		p := []byte(fmt.Sprintf(`[
-			{"op":"replace","path": "/metadata/managedFields","value": [{}]},
-			{"op":"replace","path":"/metadata/resourceVersion","value":"%s"}
-		]`, obj.GetResourceVersion()))
-		return errors.Wrap(resource.IgnoreNotFound(u.client.Patch(ctx, obj, client.RawPatch(types.JSONPatchType, p))), "cannot clear field managers")
-	}
-}
-
 // A ServerSideCompositeSyncer binds and syncs a claim with a composite resource
 // (XR). It uses server-side apply to update the XR.
 type ServerSideCompositeSyncer struct {
@@ -159,13 +63,13 @@ func NewServerSideCompositeSyncer(c client.Client, ng names.NameGenerator) *Serv
 
 // Sync the supplied claim with the supplied composite resource (XR). Syncing
 // may involve creating and binding the XR.
-func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstructured, xr *composite.Unstructured) error {
+func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstructured, xr *composite.Unstructured, hasEnforcedComposition bool) error {
 	// First we sync claim -> XR.
 
 	// Create an empty XR patch object. We'll use this object to ensure we only
 	// SSA our desired state, not the state we previously read from the API
 	// server.
-	xrPatch := composite.New(composite.WithGroupVersionKind(xr.GroupVersionKind()))
+	xrPatch := composite.New(composite.WithGroupVersionKind(xr.GroupVersionKind()), composite.WithSchema(composite.SchemaLegacy))
 
 	// If the claim references an XR, make sure we're going to apply that XR. We
 	// do this instead of using the supplied XR's name just in case the XR
@@ -180,6 +84,7 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	// existing XR, probably hijacking it from another claim.
 	if xrPatch.GetName() == "" {
 		xrPatch.SetGenerateName(fmt.Sprintf("%s-", cm.GetName()))
+
 		if err := s.names.GenerateName(ctx, xrPatch); err != nil {
 			return errors.Wrap(err, errGenerateName)
 		}
@@ -197,6 +102,7 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	if ann := withoutReservedK8sEntries(cm.GetAnnotations()); len(ann) > 0 {
 		meta.AddAnnotations(xrPatch, withoutReservedK8sEntries(cm.GetAnnotations()))
 	}
+
 	meta.AddLabels(xrPatch, withoutReservedK8sEntries(cm.GetLabels()))
 	meta.AddLabels(xrPatch, map[string]string{
 		xcrd.LabelKeyClaimName:      cm.GetName(),
@@ -215,8 +121,13 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	// 1. Grabbing a map whose keys represent all well-known claim fields.
 	// 2. Deleting any well-known fields that we want to propagate.
 	// 3. Using the resulting map keys to filter the claim's spec.
-	wellKnownClaimFields := xcrd.CompositeResourceClaimSpecProps()
+	wellKnownClaimFields := xcrd.CompositeResourceClaimSpecProps(nil)
+
 	for _, field := range xcrd.PropagateSpecProps {
+		// Skip propagating compositionRef if enforcedCompositionRef is set
+		if field == "compositionRef" && hasEnforcedComposition {
+			continue
+		}
 		delete(wellKnownClaimFields, field)
 	}
 
@@ -267,7 +178,11 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	//
 	// When a claim sets a composition ref, it supercedes selectors. It should
 	// only be propagated claim -> XR.
-	if ref := xr.GetCompositionReference(); ref != nil && cm.GetCompositionReference() == nil {
+	//
+	// EXCEPTION: When enforcedCompositionRef is set, we ALWAYS propagate
+	// XR -> claim, overriding whatever the claim has. The enforced composition
+	// takes precedence over any claim preference.
+	if ref := xr.GetCompositionReference(); ref != nil && (cm.GetCompositionReference() == nil || hasEnforcedComposition) {
 		cm.SetCompositionReference(ref)
 	}
 
@@ -313,19 +228,17 @@ func (s *ServerSideCompositeSyncer) Sync(ctx context.Context, cm *claim.Unstruct
 	}
 
 	// Preserve Crossplane machinery, like status conditions.
-	synced := cm.GetCondition(xpv1.TypeSynced)
-	ready := cm.GetCondition(xpv1.TypeReady)
+	cmcs := xpv1.ConditionedStatus{}
+	_ = fieldpath.Pave(cm.Object).GetValueInto("status", &cmcs)
 	pub := cm.GetConnectionDetailsLastPublishedTime()
 
 	// Update the claim's user-defined status fields to match the XRs.
-	cm.Object["status"] = withoutKeys(xrStatus, xcrd.GetPropFields(xcrd.CompositeResourceStatusProps())...)
+	cm.Object["status"] = withoutKeys(xrStatus, xcrd.GetPropFields(xcrd.CompositeResourceStatusProps(v1.CompositeResourceScopeLegacyCluster))...)
 
-	if !synced.Equal(xpv1.Condition{}) {
-		cm.SetConditions(synced)
+	if cmcs.Conditions != nil {
+		cm.SetConditions(cmcs.Conditions...)
 	}
-	if !ready.Equal(xpv1.Condition{}) {
-		cm.SetConditions(ready)
-	}
+
 	if pub != nil {
 		cm.SetConnectionDetailsLastPublishedTime(pub)
 	}

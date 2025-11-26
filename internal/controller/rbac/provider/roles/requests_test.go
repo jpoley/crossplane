@@ -22,10 +22,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	rbacv1 "k8s.io/api/rbac/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/test"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
 )
 
 func TestAllowed(t *testing.T) {
@@ -73,6 +71,7 @@ func TestAllowed(t *testing.T) {
 			for _, a := range tc.allow {
 				n.Allow(a.path())
 			}
+
 			got := n.Allowed(tc.check.path())
 
 			if got != tc.want {
@@ -87,10 +86,12 @@ func TestExpand(t *testing.T) {
 		rs  []rbacv1.PolicyRule
 		ctx context.Context
 	}
+
 	type want struct {
 		err   error
 		rules []Rule
 	}
+
 	cases := map[string]struct {
 		reason string
 		args
@@ -197,215 +198,17 @@ func TestExpand(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			ctx := tc.args.ctx
+			ctx := tc.ctx
 			if ctx == nil {
 				ctx = context.Background()
 			}
+
 			got, err := Expand(ctx, tc.rs...)
-			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+			if diff := cmp.Diff(tc.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nExpand(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
-			if diff := cmp.Diff(tc.want.rules, got); diff != "" {
-				t.Errorf("\n%s\nExpand(...): -want, +got:\n%s", tc.reason, diff)
-			}
-		})
-	}
-}
 
-func TestValidatePermissionRequests(t *testing.T) {
-	errBoom := errors.New("boom")
-
-	type fields struct {
-		c        client.Client
-		roleName string
-	}
-
-	type args struct {
-		ctx      context.Context
-		requests []rbacv1.PolicyRule
-	}
-
-	type want struct {
-		rs  []Rule
-		err error
-	}
-
-	cases := map[string]struct {
-		reason string
-		fields fields
-		args   args
-		want   want
-	}{
-		"GetClusterRoleError": {
-			fields: fields{
-				c: &test.MockClient{
-					MockGet: test.NewMockGetFn(errBoom),
-				},
-			},
-			want: want{
-				err: errors.Wrap(errBoom, errGetClusterRole),
-			},
-		},
-		"SuccessfulReject": {
-			fields: fields{
-				c: &test.MockClient{
-					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
-						cr := obj.(*rbacv1.ClusterRole)
-						cr.Rules = []rbacv1.PolicyRule{
-							{
-								APIGroups: []string{""},
-								Resources: []string{"secrets", "configmaps", "events"},
-								Verbs:     []string{"*"},
-							},
-							{
-								APIGroups: []string{"apps", "extensions"},
-								Resources: []string{"deployments"},
-								Verbs:     []string{"get"},
-							},
-							{
-								APIGroups: []string{"apps"},
-								Resources: []string{"deployments"},
-								Verbs:     []string{"list"},
-							},
-							{
-								APIGroups:     []string{""},
-								Resources:     []string{"pods"},
-								ResourceNames: []string{"this-one-really-cool-pod"},
-								Verbs:         []string{"*"},
-							},
-						}
-						return nil
-					}),
-				},
-			},
-			args: args{
-				ctx: context.Background(),
-				requests: []rbacv1.PolicyRule{
-					// Allowed - we allow * on secrets.
-					{
-						APIGroups: []string{""},
-						Resources: []string{"secrets"},
-						Verbs:     []string{"*"},
-					},
-					// Allowed - we allow * on configmaps.
-					{
-						APIGroups: []string{""},
-						Resources: []string{"configmaps"},
-						Verbs:     []string{"get", "list", "watch"},
-					},
-					// Rejected - we don't allow get on extensions/deployments.
-					{
-						APIGroups: []string{"extensions"},
-						Resources: []string{"deployments"},
-						Verbs:     []string{"get", "list"},
-					},
-					// Allowed - we allow get and list on apps/deployments.
-					{
-						APIGroups: []string{"apps"},
-						Resources: []string{"deployments"},
-						Verbs:     []string{"get", "list"},
-					},
-					// Rejected - we only allow access to really cool pods.
-					{
-						APIGroups: []string{""},
-						Resources: []string{"pods"},
-						Verbs:     []string{"get", "list"},
-					},
-				},
-			},
-			want: want{
-				rs: []Rule{
-					{APIGroup: "extensions", Resource: "deployments", ResourceName: "*", Verb: "list"},
-					{APIGroup: "", Resource: "pods", ResourceName: "*", Verb: "get"},
-					{APIGroup: "", Resource: "pods", ResourceName: "*", Verb: "list"},
-				},
-			},
-		},
-		"SuccessfulRejectEvenWithTimeout": {
-			fields: fields{
-				c: &test.MockClient{
-					MockGet: test.NewMockGetFn(nil, func(obj client.Object) error {
-						cr := obj.(*rbacv1.ClusterRole)
-						cr.Rules = []rbacv1.PolicyRule{
-							{
-								APIGroups: []string{""},
-								Resources: []string{"secrets", "configmaps", "events"},
-								Verbs:     []string{"*"},
-							},
-							{
-								APIGroups: []string{"apps", "extensions"},
-								Resources: []string{"deployments"},
-								Verbs:     []string{"get"},
-							},
-							{
-								APIGroups: []string{"apps"},
-								Resources: []string{"deployments"},
-								Verbs:     []string{"list"},
-							},
-							{
-								APIGroups:     []string{""},
-								Resources:     []string{"pods"},
-								ResourceNames: []string{"this-one-really-cool-pod"},
-								Verbs:         []string{"*"},
-							},
-						}
-						return nil
-					}),
-				},
-			},
-			args: args{
-				ctx: func() context.Context {
-					ctx, cancel := context.WithCancel(context.Background())
-					cancel()
-					return ctx
-				}(),
-				requests: []rbacv1.PolicyRule{
-					// Allowed - we allow * on secrets.
-					{
-						APIGroups: []string{""},
-						Resources: []string{"secrets"},
-						Verbs:     []string{"*"},
-					},
-					// Allowed - we allow * on configmaps.
-					{
-						APIGroups: []string{""},
-						Resources: []string{"configmaps"},
-						Verbs:     []string{"get", "list", "watch"},
-					},
-					// Rejected - we don't allow get on extensions/deployments.
-					{
-						APIGroups: []string{"extensions"},
-						Resources: []string{"deployments"},
-						Verbs:     []string{"get", "list"},
-					},
-					// Allowed - we allow get and list on apps/deployments.
-					{
-						APIGroups: []string{"apps"},
-						Resources: []string{"deployments"},
-						Verbs:     []string{"get", "list"},
-					},
-					// Rejected - we only allow access to really cool pods.
-					{
-						APIGroups: []string{""},
-						Resources: []string{"pods"},
-						Verbs:     []string{"get", "list"},
-					},
-				},
-			},
-			want: want{
-				err: errors.Wrap(context.Canceled, errExpandClusterRoleRules),
-			},
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			v := NewClusterRoleBackedValidator(tc.fields.c, tc.fields.roleName)
-			got, err := v.ValidatePermissionRequests(tc.args.ctx, tc.args.requests...)
-			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
-				t.Errorf("\n%s\nExpand(...): -want, +got:\n%s", tc.reason, diff)
-			}
-			if diff := cmp.Diff(tc.want.rs, got); diff != "" {
+			if diff := cmp.Diff(tc.rules, got); diff != "" {
 				t.Errorf("\n%s\nExpand(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})

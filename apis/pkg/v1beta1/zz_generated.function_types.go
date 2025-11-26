@@ -14,14 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Generated from pkg/v1/function_types.go by ../hack/duplicate_api_type.sh. DO NOT EDIT.
+// Generated from apis/pkg/v1/function_types.go by ./hack/duplicate_api_type.sh. DO NOT EDIT.
 
 package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 )
 
 // +kubebuilder:object:root=true
@@ -66,7 +66,8 @@ type FunctionStatus struct {
 type FunctionList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Function `json:"items"`
+
+	Items []Function `json:"items"`
 }
 
 // FunctionRevisionSpec specifies configuration for a FunctionRevision.
@@ -85,13 +86,14 @@ type FunctionRevisionSpec struct {
 // Crossplane creates and manages FunctionRevisions. Don't directly edit
 // FunctionRevisions.
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="HEALTHY",type="string",JSONPath=".status.conditions[?(@.type=='Healthy')].status"
-// +kubebuilder:printcolumn:name="REVISION",type="string",JSONPath=".spec.revision"
+// +kubebuilder:printcolumn:name="HEALTHY",type="string",JSONPath=".status.conditions[?(@.type=='RevisionHealthy')].status"
+// +kubebuilder:printcolumn:name="RUNTIME",type="string",JSONPath=".status.conditions[?(@.type=='RuntimeHealthy')].status"
 // +kubebuilder:printcolumn:name="IMAGE",type="string",JSONPath=".spec.image"
 // +kubebuilder:printcolumn:name="STATE",type="string",JSONPath=".spec.desiredState"
-// +kubebuilder:printcolumn:name="DEP-FOUND",type="string",JSONPath=".status.foundDependencies"
-// +kubebuilder:printcolumn:name="DEP-INSTALLED",type="string",JSONPath=".status.installedDependencies"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="REVISION",type="string",JSONPath=".spec.revision",priority=1
+// +kubebuilder:printcolumn:name="DEP-FOUND",type="string",JSONPath=".status.foundDependencies",priority=1
+// +kubebuilder:printcolumn:name="DEP-INSTALLED",type="string",JSONPath=".status.installedDependencies",priority=1
 // +kubebuilder:resource:scope=Cluster,categories={crossplane,pkgrev}
 type FunctionRevision struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -103,7 +105,8 @@ type FunctionRevision struct {
 
 // FunctionRevisionStatus represents the observed state of a FunctionRevision.
 type FunctionRevisionStatus struct {
-	PackageRevisionStatus `json:",inline"`
+	PackageRevisionStatus        `json:",inline"`
+	PackageRevisionRuntimeStatus `json:",inline"`
 
 	// Endpoint is the gRPC endpoint where Crossplane will send
 	// RunFunctionRequests.
@@ -116,5 +119,6 @@ type FunctionRevisionStatus struct {
 type FunctionRevisionList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []FunctionRevision `json:"items"`
+
+	Items []FunctionRevision `json:"items"`
 }

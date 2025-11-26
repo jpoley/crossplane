@@ -154,7 +154,7 @@ func TestSourceFromReference(t *testing.T) {
 		"SuccessfulTagWithRegistryDefaulting": {
 			reason: "If no registry is supplied, but defaulting is enabled, default registry should not be reflected in parsed source.",
 			arg: func() name.Reference {
-				ref, _ := name.ParseReference("hasheddan/xpkg-test:v0.1.0", name.WithDefaultRegistry("registry.upbound.io"))
+				ref, _ := name.ParseReference("hasheddan/xpkg-test:v0.1.0", name.WithDefaultRegistry("registry.crossplane.io"))
 				return ref
 			}(),
 			want: "hasheddan/xpkg-test",
@@ -162,7 +162,7 @@ func TestSourceFromReference(t *testing.T) {
 		"SuccessfulDigestWithRegistryDefaulting": {
 			reason: "If no registry is supplied, but defaulting is enabled, default registry should not be reflected in parsed source.",
 			arg: func() name.Reference {
-				ref, _ := name.ParseReference("hasheddan/xpkg-test@sha256:c88b938d6e7b2ed43d40b71e5a55df9c60fa653bea0c0961f3294fac46d5b56e", name.WithDefaultRegistry("registry.upbound.io"))
+				ref, _ := name.ParseReference("hasheddan/xpkg-test@sha256:c88b938d6e7b2ed43d40b71e5a55df9c60fa653bea0c0961f3294fac46d5b56e", name.WithDefaultRegistry("registry.crossplane.io"))
 				return ref
 			}(),
 			want: "hasheddan/xpkg-test",
@@ -227,6 +227,70 @@ func TestBuildPath(t *testing.T) {
 
 			if diff := cmp.Diff(tc.want, full); diff != "" {
 				t.Errorf("\n%s\nBuildPath(...): -want, +got:\n%s", tc.reason, diff)
+			}
+		})
+	}
+}
+
+func TestReplaceExt(t *testing.T) {
+	type args struct {
+		path string
+		ext  string
+	}
+
+	cases := map[string]struct {
+		reason string
+		args   args
+		want   string
+	}{
+		"ReplaceWithTxt": {
+			reason: "Should replace the existing extension with .txt",
+			args: args{
+				path: "file.doc",
+				ext:  ".txt",
+			},
+			want: "file.txt",
+		},
+		"ReplaceWithEmpty": {
+			reason: "Should remove the extension if an empty string is given",
+			args: args{
+				path: "file.doc",
+				ext:  "",
+			},
+			want: "file",
+		},
+		"NoExtensionToAdd": {
+			reason: "Should add an extension if there was none before",
+			args: args{
+				path: "file",
+				ext:  ".txt",
+			},
+			want: "file.txt",
+		},
+		"MultipleDots": {
+			reason: "Should correctly replace only the last extension",
+			args: args{
+				path: "archive.tar.gz",
+				ext:  ".zip",
+			},
+			want: "archive.tar.zip",
+		},
+		"HiddenFile": {
+			reason: "Should correctly replace extension of hidden files",
+			args: args{
+				path: ".hiddenfile.conf",
+				ext:  ".bak",
+			},
+			want: ".hiddenfile.bak",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := ReplaceExt(tc.args.path, tc.args.ext)
+
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("\n%s\nReplaceExt(...): -want, +got:\n%s", tc.reason, diff)
 			}
 		})
 	}

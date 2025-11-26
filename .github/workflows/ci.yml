@@ -5,12 +5,16 @@ on:
     branches:
       - main
       - release-*
+      # TODO(negz): Remove this and all references to the v2 branches below
+      # if/when v2 is merged into main. It's a temporary branch for v2 preview
+      # development.
+      - v2
   pull_request: {}
   workflow_dispatch: {}
 
 env:
   # Common versions
-  EARTHLY_VERSION: '0.8.15'
+  EARTHLY_VERSION: '0.8.16'
 
   # Force Earthly to use color output
   FORCE_COLOR: "1"
@@ -29,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
 
       - name: Setup Earthly
         uses: earthly/actions-setup@43211c7a0eae5344d6d79fb4aaf209c8f8866203 # v1.0.13
@@ -38,14 +42,14 @@ jobs:
           version: ${{ env.EARTHLY_VERSION }}
 
       - name: Login to DockerHub
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         if: env.DOCKER_USR != ''
         with:
           username: ${{ secrets.DOCKER_USR }}
           password: ${{ secrets.DOCKER_PSW }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -59,6 +63,9 @@ jobs:
 
       - name: Generate Files
         run: earthly --strict --remote-cache ghcr.io/crossplane/earthly-cache:${{ github.job }} +generate
+
+      - name: Tidy Modules
+        run: earthly --strict --remote-cache ghcr.io/crossplane/earthly-cache:${{ github.job }} +tidy
 
       - name: Count Changed Files
         id: changed_files
@@ -75,7 +82,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
 
       - name: Setup Earthly
         uses: earthly/actions-setup@43211c7a0eae5344d6d79fb4aaf209c8f8866203 # v1.0.13
@@ -84,14 +91,14 @@ jobs:
           version: ${{ env.EARTHLY_VERSION }}
 
       - name: Login to DockerHub
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         if: env.DOCKER_USR != ''
         with:
           username: ${{ secrets.DOCKER_USR }}
           password: ${{ secrets.DOCKER_PSW }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -111,7 +118,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
 
       - name: Setup Earthly
         uses: earthly/actions-setup@43211c7a0eae5344d6d79fb4aaf209c8f8866203 # v1.0.13
@@ -120,14 +127,14 @@ jobs:
           version: ${{ env.EARTHLY_VERSION }}
 
       - name: Login to DockerHub
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         if: env.DOCKER_USR != ''
         with:
           username: ${{ secrets.DOCKER_USR }}
           password: ${{ secrets.DOCKER_PSW }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -143,7 +150,7 @@ jobs:
         run: earthly --strict --remote-cache ghcr.io/crossplane/earthly-cache:${{ github.job }} +ci-codeql
 
       - name: Upload CodeQL Results to GitHub
-        uses: github/codeql-action/upload-sarif@ea9e4e37992a54ee68a9622e985e60c8e8f12d9f # v3
+        uses: github/codeql-action/upload-sarif@181d5eefc20863364f96762470ba6f862bdef56b # v3
         with:
           sarif_file: '_output/codeql/go.sarif'
 
@@ -155,7 +162,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
 
       - name: Run Trivy vulnerability scanner in fs mode
         uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
@@ -169,7 +176,7 @@ jobs:
           output: 'trivy-results.sarif'
 
       - name: Upload Trivy Results to GitHub
-        uses: github/codeql-action/upload-sarif@ea9e4e37992a54ee68a9622e985e60c8e8f12d9f # v3
+        uses: github/codeql-action/upload-sarif@181d5eefc20863364f96762470ba6f862bdef56b # v3
         with:
           sarif_file: 'trivy-results.sarif'
 
@@ -178,7 +185,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
 
       - name: Setup Earthly
         uses: earthly/actions-setup@43211c7a0eae5344d6d79fb4aaf209c8f8866203 # v1.0.13
@@ -187,14 +194,14 @@ jobs:
           version: ${{ env.EARTHLY_VERSION }}
 
       - name: Login to DockerHub
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         if: env.DOCKER_USR != ''
         with:
           username: ${{ secrets.DOCKER_USR }}
           password: ${{ secrets.DOCKER_PSW }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -221,17 +228,49 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Test areas are components of Crossplane's functionality.
+        test-area:
+          - apiextensions
+          - apiextensions-legacy
+          - pkg
+          - protection
+          - lifecycle
+
+        # Test suites usually correspond to alpha features. We add a suite
+        # whenever we add an alpha feature flag, to test one or more areas of
+        # Crossplane with that flag enabled. The base suite runs Crossplane
+        # with no feature flags. We always want to test all areas with this
+        # suite.
         test-suite:
           - base
-          - usage
-          - ssa-claims
-          - realtime-compositions
-          - package-dependency-upgrades
-          - package-signature-verification
+
+        # Most feature flags only affect a specific area of Crossplane. So here
+        # we add custom combinations of test suites (i.e. feature flags) and
+        # areas we want to test with those flags enabled.
+        include:
+         # API extensions feature flags
+         - test-area: apiextensions
+           test-suite: function-response-cache
+         - test-area: apiextensions-legacy
+           test-suite: function-response-cache
+
+         # Package manager feature flags
+         - test-area: pkg
+           test-suite: package-dependency-updates
+         - test-area: pkg
+           test-suite: package-signature-verification
+
+         # Operations feature flags
+         - test-area: ops
+           test-suite: ops
+
+         # Managed Resource Activation Policy (defaults disabled)
+         - test-area: mrap
+           test-suite: mrap
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
 
       - name: Setup Earthly
         uses: earthly/actions-setup@43211c7a0eae5344d6d79fb4aaf209c8f8866203 # v1.0.13
@@ -240,14 +279,14 @@ jobs:
           version: ${{ env.EARTHLY_VERSION }}
 
       - name: Login to DockerHub
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         if: env.DOCKER_USR != ''
         with:
           username: ${{ secrets.DOCKER_USR }}
           password: ${{ secrets.DOCKER_PSW }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -279,14 +318,17 @@ jobs:
             echo "Error: Minor version cannot be decremented below 0"
             exit 1
           fi
-          
+
           echo "CROSSPLANE_PRIOR_VERSION=$MAJOR.$MINOR" >> $GITHUB_ENV
 
-
       - name: Run E2E Tests
-        run: |
-          earthly --strict --allow-privileged --remote-cache ghcr.io/crossplane/earthly-cache:${{ github.job }}-${{ matrix.test-suite}} \
-            +e2e --FLAGS="-test.failfast -fail-fast -prior-crossplane-version=${CROSSPLANE_PRIOR_VERSION} --test-suite ${{ matrix.test-suite }}"
+        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
+        with:
+          timeout_minutes: 45  # Per attempt
+          max_attempts: 3
+          command: |
+            earthly --strict --allow-privileged --remote-cache ghcr.io/crossplane/earthly-cache:${{ github.job }}-${{ matrix.test-area}}-${{ matrix.test-suite}} \
+              +e2e --GOTESTSUM_FORMAT="testname" --FLAGS="-test.failfast -fail-fast -prior-crossplane-version=${CROSSPLANE_PRIOR_VERSION} --test-suite ${{ matrix.test-suite }} -labels area=${{ matrix.test-area }}"
 
       - name: Publish E2E Test Flakes
         if: '!cancelled()'
@@ -297,6 +339,13 @@ jobs:
           key: ${{ secrets.BUILDPULSE_ACCESS_KEY_ID }}
           secret: ${{ secrets.BUILDPULSE_SECRET_ACCESS_KEY }}
           path: _output/tests/e2e-tests.xml
+
+      - name: Upload E2E Test Artifacts to GitHub
+        if: '!cancelled()'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-tests-${{ matrix.test-area }}-${{ matrix.test-suite }}
+          path: _output/tests/**
 
   publish-artifacts:
     runs-on: ubuntu-22.04
@@ -317,7 +366,7 @@ jobs:
           docker-images: false
 
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
         with:
           fetch-depth: 0
 
@@ -328,14 +377,14 @@ jobs:
           version: ${{ env.EARTHLY_VERSION }}
 
       - name: Login to DockerHub
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         if: env.DOCKER_USR != ''
         with:
           username: ${{ secrets.DOCKER_USR }}
           password: ${{ secrets.DOCKER_PSW }}
 
       - name: Login to Upbound
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         if: env.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR != ''
         with:
           registry: xpkg.upbound.io
@@ -343,7 +392,7 @@ jobs:
           password: ${{ secrets.UPBOUND_MARKETPLACE_PUSH_ROBOT_PSW }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -354,7 +403,7 @@ jobs:
         run: echo "EARTHLY_MAX_REMOTE_CACHE=true" >> $GITHUB_ENV
 
       - name: Configure Earthly to Push Artifacts
-        if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release-')) && env.DOCKER_USR != '' && env.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR != '' && env.AWS_USR != ''
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2' || startsWith(github.ref, 'refs/heads/release-')) && env.DOCKER_USR != '' && env.UPBOUND_MARKETPLACE_PUSH_ROBOT_USR != '' && env.AWS_USR != ''
         run: echo "EARTHLY_PUSH=true" >> $GITHUB_ENV
 
       - name: Set CROSSPLANE_VERSION GitHub Environment Variable
@@ -379,8 +428,16 @@ jobs:
             --secret=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_PSW }} \
             +ci-promote-build-artifacts --AWS_DEFAULT_REGION=us-east-1 --CROSSPLANE_VERSION=${CROSSPLANE_VERSION} --BUILD_DIR=${GITHUB_REF##*/} --CHANNEL=master
 
+      - name: Push Artifacts to https://releases.crossplane.io/preview/ and https://charts.crossplane.io/preview
+        if: env.AWS_USR != '' && github.ref == 'refs/heads/v2'
+        run: |
+          earthly --strict \
+            --secret=AWS_ACCESS_KEY_ID=${{ secrets.AWS_USR }} \
+            --secret=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_PSW }} \
+            +ci-promote-build-artifacts --AWS_DEFAULT_REGION=us-east-1 --CROSSPLANE_VERSION=${CROSSPLANE_VERSION} --BUILD_DIR=${GITHUB_REF##*/} --CHANNEL=preview
+
       - name: Upload Artifacts to GitHub
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: output
           path: _output/**
@@ -406,7 +463,7 @@ jobs:
           language: go
 
       - name: Upload Crash
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure() && steps.build.outcome == 'success'
         with:
           name: artifacts
@@ -417,31 +474,11 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
 
-      - name: Setup Buf
-        uses: bufbuild/buf-setup-action@76ddbd1bcb9da6da11cb7c41bd97e47f81c39a39 # v1.37.0
+      - name: Lint and Push Protocol Buffers
+        uses: bufbuild/buf-action@c231a1aa9281e5db706c970f468f0744a37561fd # v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.BUF_TOKEN }}
+          pr_comment: false
 
-      - name: Lint Protocol Buffers
-        uses: bufbuild/buf-lint-action@06f9dd823d873146471cfaaf108a993fe00e5325 # v1.1.1
-        with:
-          input: apis
-
-      # buf-breaking-action doesn't support branches
-      # https://github.com/bufbuild/buf-push-action/issues/34
-      - name: Detect Breaking Changes in Protocol Buffers
-        uses: bufbuild/buf-breaking-action@a074e988ee34efcd4927079e79c611f428354c01 # v1
-        # We want to run this for the main branch, and PRs against main.
-        if: ${{ github.ref == 'refs/heads/main' || github.base_ref == 'main' }}
-        with:
-          input: apis
-          against: "https://github.com/${GITHUB_REPOSITORY}.git#branch=main,subdir=apis"
-
-      - name: Push Protocol Buffers to Buf Schema Registry
-        if: ${{ github.repository == 'crossplane/crossplane' && github.ref == 'refs/heads/main' }}
-        uses: bufbuild/buf-push-action@a654ff18effe4641ebea4a4ce242c49800728459 # v1.2.0
-        with:
-          input: apis
-          buf_token: ${{ secrets.BUF_TOKEN }}

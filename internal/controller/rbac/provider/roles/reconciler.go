@@ -35,50 +35,30 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/event"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 
-	v1 "github.com/crossplane/crossplane/apis/pkg/v1"
-	"github.com/crossplane/crossplane/internal/controller/rbac/controller"
+	"github.com/crossplane/crossplane/v2/apis/apiextensions/v1alpha1"
+	v1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	"github.com/crossplane/crossplane/v2/internal/controller/rbac/controller"
 )
 
 const (
 	timeout = 2 * time.Minute
 
-	errGetPR               = "cannot get ProviderRevision"
-	errListPRs             = "cannot list ProviderRevisions"
-	errApplyRole           = "cannot apply ClusterRole"
-	errValidatePermissions = "cannot validate permission requests"
-	errRejectedPermission  = "refusing to apply any RBAC roles due to request for disallowed permission"
+	errGetPR     = "cannot get ProviderRevision"
+	errListPRs   = "cannot list ProviderRevisions"
+	errApplyRole = "cannot apply ClusterRole"
 )
 
 // Event reasons.
 const (
 	reasonApplyRoles event.Reason = "ApplyClusterRoles"
 )
-
-// A PermissionRequestsValidator validates requested RBAC rules.
-type PermissionRequestsValidator interface {
-	// ValidatePermissionRequests validates the supplied slice of RBAC rules. It
-	// returns a slice of any rejected (i.e. disallowed) rules. It returns an
-	// error if it is unable to validate permission requests.
-	ValidatePermissionRequests(ctx context.Context, requested ...rbacv1.PolicyRule) ([]Rule, error)
-}
-
-// A PermissionRequestsValidatorFn validates requested RBAC rules.
-type PermissionRequestsValidatorFn func(ctx context.Context, requested ...rbacv1.PolicyRule) ([]Rule, error)
-
-// ValidatePermissionRequests validates the supplied slice of RBAC rules. It
-// returns a slice of any rejected (i.e. disallowed) rules. It returns an error
-// if it is unable to validate permission requests.
-func (fn PermissionRequestsValidatorFn) ValidatePermissionRequests(ctx context.Context, requested ...rbacv1.PolicyRule) ([]Rule, error) {
-	return fn(ctx, requested...)
-}
 
 // A ClusterRoleRenderer renders ClusterRoles for the given resources.
 type ClusterRoleRenderer interface {
@@ -103,19 +83,14 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 	if o.AllowClusterRole == "" {
 		r := NewReconciler(mgr,
 			WithLogger(o.Logger.WithValues("controller", name)),
-			WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))))
+			WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name), o.EventFilterFunctions...)))
 
 		return ctrl.NewControllerManagedBy(mgr).
 			Named(name).
 			For(&v1.ProviderRevision{}).
 			Owns(&rbacv1.ClusterRole{}).
 			WithOptions(o.ForControllerRuntime()).
-			Complete(ratelimiter.NewReconciler(name, errors.WithSilentRequeueOnConflict(r), o.GlobalRateLimiter))
-	}
-
-	wrh := &EnqueueRequestForAllRevisionsWithRequests{
-		client:          mgr.GetClient(),
-		clusterRoleName: o.AllowClusterRole,
+			Complete(errors.WithSilentRequeueOnConflict(r))
 	}
 
 	sfh := &EnqueueRequestForAllRevisionsInFamily{
@@ -124,18 +99,16 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 
 	r := NewReconciler(mgr,
 		WithLogger(o.Logger.WithValues("controller", name)),
-		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
-		WithPermissionRequestsValidator(NewClusterRoleBackedValidator(mgr.GetClient(), o.AllowClusterRole)),
-		WithOrgDiffer(OrgDiffer{DefaultRegistry: o.DefaultRegistry}))
+		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name), o.EventFilterFunctions...)),
+		WithOrgDiffer(OrgDiffer{}))
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
 		For(&v1.ProviderRevision{}).
 		Owns(&rbacv1.ClusterRole{}).
-		Watches(&rbacv1.ClusterRole{}, wrh).
 		Watches(&v1.ProviderRevision{}, sfh).
 		WithOptions(o.ForControllerRuntime()).
-		Complete(ratelimiter.NewReconciler(name, errors.WithSilentRequeueOnConflict(r), o.GlobalRateLimiter))
+		Complete(errors.WithSilentRequeueOnConflict(r))
 }
 
 // ReconcilerOption is used to configure the Reconciler.
@@ -171,14 +144,6 @@ func WithClusterRoleRenderer(rr ClusterRoleRenderer) ReconcilerOption {
 	}
 }
 
-// WithPermissionRequestsValidator specifies how the Reconciler should validate
-// requests for extra RBAC permissions.
-func WithPermissionRequestsValidator(rv PermissionRequestsValidator) ReconcilerOption {
-	return func(r *Reconciler) {
-		r.rbac.PermissionRequestsValidator = rv
-	}
-}
-
 // WithOrgDiffer specifies how the Reconciler should diff OCI orgs. It does this
 // to ensure that two providers may only be part of the same family if they're
 // in the same OCI org.
@@ -198,8 +163,7 @@ func NewReconciler(mgr manager.Manager, opts ...ReconcilerOption) *Reconciler {
 		},
 
 		rbac: rbac{
-			PermissionRequestsValidator: PermissionRequestsValidatorFn(VerySecureValidator),
-			ClusterRoleRenderer:         ClusterRoleRenderFn(RenderClusterRoles),
+			ClusterRoleRenderer: ClusterRoleRenderFn(RenderClusterRoles),
 		},
 
 		log:    logging.NewNopLogger(),
@@ -209,11 +173,11 @@ func NewReconciler(mgr manager.Manager, opts ...ReconcilerOption) *Reconciler {
 	for _, f := range opts {
 		f(r)
 	}
+
 	return r
 }
 
 type rbac struct {
-	PermissionRequestsValidator
 	ClusterRoleRenderer
 }
 
@@ -229,7 +193,7 @@ type Reconciler struct {
 
 // Reconcile a ProviderRevision by creating a series of opinionated ClusterRoles
 // that may be bound to allow access to the resources it defines.
-func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) { //nolint:gocognit // Slightly over (13).
+func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	log := r.log.WithValues("request", req)
 	log.Debug("Reconciling")
 
@@ -281,8 +245,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if kerrors.IsConflict(err) {
 				return reconcile.Result{Requeue: true}, nil
 			}
+
 			err = errors.Wrap(err, errListPRs)
 			r.record.Event(pr, event.Warning(reasonApplyRoles, err))
+
 			return reconcile.Result{}, err
 		}
 
@@ -310,32 +276,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 	}
 
-	rejected, err := r.rbac.ValidatePermissionRequests(ctx, pr.Status.PermissionRequests...)
-	if err != nil {
-		err = errors.Wrap(err, errValidatePermissions)
-		r.record.Event(pr, event.Warning(reasonApplyRoles, err))
-		return reconcile.Result{}, err
-	}
-
-	for _, rule := range rejected {
-		r.record.Event(pr, event.Warning(reasonApplyRoles, errors.Errorf("%s %s", errRejectedPermission, rule)))
-	}
-
-	// We return early and don't grant _any_ RBAC permissions if we would reject
-	// any requested permission. It's better for the provider to be completely
-	// and obviously broken than for it to be subtly broken in a way that may
-	// not surface immediately, i.e. due to missing an RBAC permission it only
-	// occasionally needs. There's no need to requeue - the revisions requests
-	// won't change, and we're watching the ClusterRole of allowed requests.
-	if len(rejected) > 0 {
-		return reconcile.Result{Requeue: false}, nil
-	}
-
 	applied := make([]string, 0)
+
 	for _, cr := range r.rbac.RenderClusterRoles(pr, resources) {
 		log := log.WithValues("role-name", cr.GetName())
 		origRV := ""
-		err := r.client.Apply(ctx, &cr,
+
+		err := r.client.Applicator.Apply(ctx, &cr,
 			resource.MustBeControllableBy(pr.GetUID()),
 			resource.AllowUpdateIf(ClusterRolesDiffer),
 			resource.StoreCurrentRV(&origRV),
@@ -344,16 +291,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			log.Debug("Skipped no-op RBAC ClusterRole apply")
 			continue
 		}
+
 		if err != nil {
 			if kerrors.IsConflict(err) {
 				return reconcile.Result{Requeue: true}, nil
 			}
+
 			err = errors.Wrap(err, errApplyRole)
 			r.record.Event(pr, event.Warning(reasonApplyRoles, err))
+
 			return reconcile.Result{}, err
 		}
+
 		if cr.GetResourceVersion() != origRV {
 			log.Debug("Applied RBAC ClusterRole")
+
 			applied = append(applied, cr.GetName())
 		}
 	}
@@ -378,8 +330,14 @@ func DefinedResources(refs []xpv1.TypedReference) []Resource {
 		// just skip this resource since it can't be a CRD.
 		gv, _ := schema.ParseGroupVersion(ref.APIVersion)
 
-		// We're only concerned with CRDs.
-		if gv.Group != apiextensions.GroupName || ref.Kind != "CustomResourceDefinition" {
+		// We're only concerned with CRDs or MRDs.
+		switch {
+		case gv.Group == apiextensions.GroupName && ref.Kind == "CustomResourceDefinition":
+		// Do the work!
+		case gv.Group == v1alpha1.Group && ref.Kind == v1alpha1.ManagedResourceDefinitionKind:
+		// Do the work!
+		default:
+			// Filter out the non CRD or MRD.
 			continue
 		}
 
@@ -391,6 +349,7 @@ func DefinedResources(refs []xpv1.TypedReference) []Resource {
 
 		out = append(out, Resource{Group: g, Plural: p})
 	}
+
 	return out
 }
 
@@ -402,30 +361,29 @@ func ClusterRolesDiffer(current, desired runtime.Object) bool {
 	// happens, we probably do want to panic.
 	c := current.(*rbacv1.ClusterRole) //nolint:forcetypeassert // See above.
 	d := desired.(*rbacv1.ClusterRole) //nolint:forcetypeassert // See above.
+
 	return !cmp.Equal(c.GetLabels(), d.GetLabels()) || !cmp.Equal(c.Rules, d.Rules)
 }
 
 // An OrgDiffer determines whether two references are part of the same org. In
 // this context we consider an org to consist of:
 //
-//   - The registry (e.g. xpkg.upbound.io or index.docker.io).
+//   - The registry (e.g. xpkg.crossplane.io or index.docker.io).
 //   - The part of the repository path before the first slash (e.g. crossplane
 //     in crossplane/provider-aws).
-type OrgDiffer struct {
-	// The default OCI registry to use when parsing references.
-	DefaultRegistry string
-}
+type OrgDiffer struct{}
 
 // Differs returns true if the supplied references are not part of the same OCI
 // registry and org.
 func (d OrgDiffer) Differs(a, b string) bool {
 	// If we can't parse either reference we can't compare them. Safest thing to
 	// do is to assume they're not part of the same org.
-	ra, err := name.ParseReference(a, name.WithDefaultRegistry(d.DefaultRegistry))
+	ra, err := name.ParseReference(a, name.WithDefaultRegistry(""))
 	if err != nil {
 		return true
 	}
-	rb, err := name.ParseReference(b, name.WithDefaultRegistry(d.DefaultRegistry))
+
+	rb, err := name.ParseReference(b, name.WithDefaultRegistry(""))
 	if err != nil {
 		return true
 	}
@@ -433,7 +391,7 @@ func (d OrgDiffer) Differs(a, b string) bool {
 	ca := ra.Context()
 	cb := rb.Context()
 
-	// If the registries (e.g. xpkg.upbound.io) don't match they're not in the
+	// If the registries (e.g. xpkg.crossplane.io) don't match they're not in the
 	// same org.
 	if ca.RegistryStr() != cb.RegistryStr() {
 		return true

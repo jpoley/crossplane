@@ -12,7 +12,7 @@ Crossplane is a [Cloud Native Computing Foundation][cncf] project.
 
 ## Get Started
 
-Crossplane's [Get Started Docs] cover install and cloud provider quickstarts.
+Crossplane's [Get Started Docs] covers install and resource quickstarts.
 
 ## Releases
 
@@ -24,15 +24,17 @@ documentation].
 
 | Release | Release Date  |   EOL    |
 |:-------:|:-------------:|:--------:|
-|  v1.16  | May 15, 2024  | Feb 2025 |
-|  v1.17  | Aug 29, 2024  | May 2025 |
-|  v1.18  | Early Nov '24 | Aug 2025 |
-|  v1.19  | Early Feb '25 | Nov 2025 |
-|  v1.20  | Early May '25 | Feb 2026 |
-|  v1.21  | Early Aug '25 | May 2026 |
+|  v1.20  | May 21, 2025  | Feb 2026 |
+|  v2.0   |  Aug 8, 2025  | May 2026 |
+|  v2.1   |  Nov 5, 2025  | Aug 2026 |
+|  v2.2   | Early Feb '26 | Nov 2026 |
+|  v2.3   | Early May '26 | Feb 2027 |
+|  v2.4   | Early Aug '26 | May 2027 |
 
 You can subscribe to the [community calendar] to track all release dates, and
 find the most recent releases on the [releases] page.
+
+The release process is fully documented in the [`crossplane/release`] repo.
 
 ## Roadmap
 
@@ -59,15 +61,15 @@ delivery timeline.
 
 ## Get Involved
 
-[![Slack](https://img.shields.io/badge/slack-crossplane-red?logo=slack)](https://slack.crossplane.io) [![Twitter Follow](https://img.shields.io/twitter/follow/crossplane_io?logo=X&label=Follow&style=flat)](https://twitter.com/intent/follow?screen_name=crossplane_io&user_id=788180534543339520) [![YouTube Channel Subscribers](https://img.shields.io/youtube/channel/subscribers/UC19FgzMBMqBro361HbE46Fw)](https://www.youtube.com/@Crossplane)
+[![Slack](https://img.shields.io/badge/slack-crossplane-red?logo=slack)](https://slack.crossplane.io) [![Bluesky Follow](https://img.shields.io/badge/bluesky-Follow-blue?logo=bluesky)](https://bsky.app/profile/crossplane.io) [![Twitter Follow](https://img.shields.io/twitter/follow/crossplane_io?logo=X&label=Follow&style=flat)](https://twitter.com/intent/follow?screen_name=crossplane_io&user_id=788180534543339520) [![YouTube Channel Subscribers](https://img.shields.io/youtube/channel/subscribers/UC19FgzMBMqBro361HbE46Fw)](https://www.youtube.com/@Crossplane)
 
 Crossplane is a community driven project; we welcome your contribution. To file
 a bug, suggest an improvement, or request a new feature please open an [issue
 against Crossplane] or the relevant provider. Refer to our [contributing guide]
 for more information on how you can help.
 
-* Discuss Crossplane on [Slack] or our [developer mailing list].
-* Follow us on [Twitter] or [LinkedIn], or subscribe to our [newsletter].
+* Discuss Crossplane on [Slack].
+* Follow us on [Bluesky], [Twitter], or [LinkedIn].
 * Contact us via [Email].
 * Join our regular community meetings.
 * Provide feedback on our [roadmap and releases board].
@@ -80,15 +82,26 @@ Anyone who wants to discuss the direction of the project, design and
 implementation reviews, or raise general questions with the broader community is
 encouraged to join.
 
-* Meeting link: <https://zoom.us/j/425148449?pwd=NEk4N0tHWGpEazhuam1yR28yWHY5QT09>
+* Meeting link: <https://zoom-lfx.platform.linuxfoundation.org/meeting/98901510164?password=c60c41ae-1e1e-42d0-9a74-16de2fbb66f9>
 * [Current agenda and past meeting notes]
 * [Past meeting recordings]
 * [Community Calendar][community calendar]
 
 ### Special Interest Groups (SIG)
 
-Each SIG collaborates in Slack and some groups have regular meetings, you can
-find the meetings in the [Community Calendar][community calendar].
+The Crossplane project supports SIGs as discussion groups that bring together
+community members with shared interests. SIGs have no decision making authority
+or ownership responsibilities. They serve purely as collaborative forums for
+community discussion.
+
+If you're interested in any of the areas below, consider joining the discussion
+in their Slack channels. To propose a new SIG that isn't represented, reach out
+through any of the contact methods in the [get involved] section.
+
+Each SIG collaborates primarily in Slack, and some groups hold regular meetings
+that you can find in the [Community Calendar][community calendar].
+
+- [#sig-cli][sig-cli]
 - [#sig-composition-environments][sig-composition-environments-slack]
 - [#sig-composition-functions][sig-composition-functions-slack]
 - [#sig-deletion-ordering][sig-deletion-ordering-slack]
@@ -119,11 +132,10 @@ Crossplane is under the Apache 2.0 license.
 [release cycle documentation]: https://docs.crossplane.io/knowledge-base/guides/release-cycle
 [install]: https://crossplane.io/docs/latest
 [Slack]: https://slack.crossplane.io
-[developer mailing list]: https://groups.google.com/forum/#!forum/crossplane-dev
+[Bluesky]: https://bsky.app/profile/crossplane.io
 [Twitter]: https://twitter.com/crossplane_io
 [LinkedIn]: https://www.linkedin.com/company/crossplane/
-[newsletter]: https://eepurl.com/ivy4v-/
-[Email]: mailto:info@crossplane.io
+[Email]: mailto:crossplane-info@lists.cncf.io
 [issue against Crossplane]: https://github.com/crossplane/crossplane/issues
 [contributing guide]: contributing/README.md
 [community meeting time]: https://www.thetimezoneconverter.com/?t=10:00&tz=PT%20%28Pacific%20Time%29
@@ -131,12 +143,15 @@ Crossplane is under the Apache 2.0 license.
 [Past meeting recordings]: https://www.youtube.com/playlist?list=PL510POnNVaaYYYDSICFSNWFqNbx1EMr-M
 [roadmap and releases board]: https://github.com/orgs/crossplane/projects/20/views/9?pane=info
 [cncf]: https://www.cncf.io/
-[Get Started Docs]: https://docs.crossplane.io/latest/getting-started/
-[community calendar]: https://calendar.google.com/calendar/embed?src=c_2cdn0hs9e2m05rrv1233cjoj1k%40group.calendar.google.com
+[Get Started Docs]: https://docs.crossplane.io/latest/get-started/get-started-with-composition
+[community calendar]: https://zoom-lfx.platform.linuxfoundation.org/meetings/crossplane?view=month
 [releases]: https://github.com/crossplane/crossplane/releases
+[`crossplane/release`]: https://github.com/crossplane/release
 [ADOPTERS.md]: ADOPTERS.md
 [regular community meetings]: https://github.com/crossplane/crossplane/blob/main/README.md#get-involved
 [Crossplane Roadmap]: https://github.com/orgs/crossplane/projects/20/views/9?pane=info
+[get involved]: https://github.com/crossplane/crossplane/blob/main/README.md#get-involved
+[sig-cli]: https://crossplane.slack.com/archives/C08V9PMLRQA
 [sig-composition-environments-slack]: https://crossplane.slack.com/archives/C05BP6QFLUW
 [sig-composition-functions-slack]: https://crossplane.slack.com/archives/C031Y29CSAE
 [sig-deletion-ordering-slack]: https://crossplane.slack.com/archives/C05BP8W5ALW

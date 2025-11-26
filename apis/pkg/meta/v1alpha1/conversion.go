@@ -22,7 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
-	v1 "github.com/crossplane/crossplane/apis/pkg/meta/v1"
+	v1 "github.com/crossplane/crossplane/v2/apis/pkg/meta/v1"
 )
 
 const (
@@ -39,7 +39,6 @@ const (
 // goverter:name GeneratedToHubConverter
 // goverter:extend ConvertObjectMeta
 // goverter:output:file ./zz_generated.conversion.go
-// goverter:output:package github.com/crossplane/crossplane/apis/pkg/meta/v1alpha1
 // +k8s:deepcopy-gen=false
 type ToHubConverter interface {
 	Configuration(in *Configuration) *v1.Configuration
@@ -52,7 +51,6 @@ type ToHubConverter interface {
 // goverter:name GeneratedFromHubConverter
 // goverter:extend ConvertObjectMeta
 // goverter:output:file ./zz_generated.conversion.go
-// goverter:output:package github.com/crossplane/crossplane/apis/pkg/meta/v1alpha1
 // +k8s:deepcopy-gen=false
 type FromHubConverter interface {
 	Configuration(in *v1.Configuration) *Configuration

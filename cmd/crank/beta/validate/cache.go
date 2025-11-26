@@ -24,7 +24,9 @@ import (
 	"github.com/spf13/afero"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+
+	"github.com/crossplane/crossplane/v2/cmd/crank/common/load"
 )
 
 // Cache defines an interface for caching schemas.
@@ -32,7 +34,7 @@ type Cache interface {
 	Store(schemas [][]byte, path string) error
 	Flush() error
 	Init() error
-	Load() ([]*unstructured.Unstructured, error)
+	Load(image string) ([]*unstructured.Unstructured, error)
 	Exists(image string) (string, error)
 }
 
@@ -86,16 +88,19 @@ func (c *LocalCache) Flush() error {
 	return c.fs.RemoveAll(c.cacheDir)
 }
 
-// Load loads the schemas from the cache directory.
-func (c *LocalCache) Load() ([]*unstructured.Unstructured, error) {
-	loader, err := NewLoader(c.cacheDir)
+// Load loads schemas from the cache directory.
+// image should be a validate image name with the format: <registry>/<image>:<tag>.
+func (c *LocalCache) Load(image string) ([]*unstructured.Unstructured, error) {
+	cacheImagePath := c.getCachePath(image)
+
+	loader, err := load.NewLoader(cacheImagePath)
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot create loader from the path %s", c.cacheDir)
+		return nil, errors.Wrapf(err, "cannot create loader from %s", cacheImagePath)
 	}
 
 	schemas, err := loader.Load()
 	if err != nil {
-		return nil, errors.Wrapf(err, "cannot load schemas from the path %s", c.cacheDir)
+		return nil, errors.Wrapf(err, "cannot load schemas from %s", cacheImagePath)
 	}
 
 	return schemas, nil
@@ -103,8 +108,7 @@ func (c *LocalCache) Load() ([]*unstructured.Unstructured, error) {
 
 // Exists checks if the cache contains the image and returns the path if it doesn't exist.
 func (c *LocalCache) Exists(image string) (string, error) {
-	fName := strings.ReplaceAll(image, ":", "@")
-	path := filepath.Join(c.cacheDir, fName)
+	path := c.getCachePath(image)
 
 	_, err := os.Stat(path)
 	if err != nil && os.IsNotExist(err) {
@@ -114,4 +118,10 @@ func (c *LocalCache) Exists(image string) (string, error) {
 	}
 
 	return "", nil
+}
+
+// getCachePath transforms an image name to a validate folder path that store schemas.
+func (c *LocalCache) getCachePath(image string) string {
+	cacheImagePath := strings.ReplaceAll(image, ":", "@")
+	return filepath.Join(c.cacheDir, cacheImagePath)
 }

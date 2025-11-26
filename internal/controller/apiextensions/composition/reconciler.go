@@ -30,15 +30,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/event"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 
-	v1 "github.com/crossplane/crossplane/apis/apiextensions/v1"
-	"github.com/crossplane/crossplane/internal/controller/apiextensions/controller"
+	v1 "github.com/crossplane/crossplane/v2/apis/apiextensions/v1"
+	"github.com/crossplane/crossplane/v2/internal/controller/apiextensions/controller"
 )
 
 const (
@@ -68,14 +67,14 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 
 	r := NewReconciler(mgr,
 		WithLogger(o.Logger.WithValues("controller", name)),
-		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))))
+		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name), o.EventFilterFunctions...)))
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
 		For(&v1.Composition{}).
 		Owns(&v1.CompositionRevision{}).
 		WithOptions(o.ForControllerRuntime()).
-		Complete(ratelimiter.NewReconciler(name, errors.WithSilentRequeueOnConflict(r), o.GlobalRateLimiter))
+		Complete(errors.WithSilentRequeueOnConflict(r))
 }
 
 // ReconcilerOption is used to configure the Reconciler.
@@ -106,6 +105,7 @@ func NewReconciler(mgr manager.Manager, opts ...ReconcilerOption) *Reconciler {
 	for _, f := range opts {
 		f(r)
 	}
+
 	return r
 }
 
@@ -130,6 +130,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if err := r.client.Get(ctx, req.NamespacedName, comp); err != nil {
 		log.Debug(errGet, "error", err)
 		r.record.Event(comp, event.Warning(reasonCreateRev, errors.Wrap(err, errGet)))
+
 		return reconcile.Result{}, errors.Wrap(resource.IgnoreNotFound(err), errGet)
 	}
 
@@ -150,6 +151,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if err := r.client.List(ctx, rl, client.MatchingLabels{v1.LabelCompositionName: comp.GetName()}); err != nil {
 		log.Debug(errListRevs, "error", err)
 		r.record.Event(comp, event.Warning(reasonCreateRev, errors.Wrap(err, errListRevs)))
+
 		return reconcile.Result{}, errors.Wrap(err, errListRevs)
 	}
 
@@ -172,11 +174,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			if err := meta.AddControllerReference(rev, meta.AsController(meta.TypedReferenceTo(comp, v1.CompositionGroupVersionKind))); err != nil {
 				log.Debug(errOwnRev, "error", err)
 				r.record.Event(comp, event.Warning(reasonUpdateRev, err))
+
 				return reconcile.Result{}, errors.Wrap(err, errOwnRev)
 			}
+
 			if err := r.client.Update(ctx, rev); err != nil {
 				log.Debug(errOwnRev, "error", err)
 				r.record.Event(comp, event.Warning(reasonUpdateRev, err))
+
 				return reconcile.Result{}, errors.Wrap(err, errOwnRev)
 			}
 		}
@@ -198,10 +203,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		rev.Spec.Revision = latestRev + 1
 		if err := r.client.Update(ctx, rev); err != nil {
 			log.Debug(errUpdateRevSpec, "error", err)
+
 			if kerrors.IsConflict(err) {
 				return reconcile.Result{Requeue: true}, nil
 			}
+
 			r.record.Event(comp, event.Warning(reasonUpdateRev, err))
+
 			return reconcile.Result{}, errors.Wrap(err, errUpdateRevSpec)
 		}
 	}
@@ -215,10 +223,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if err := r.client.Create(ctx, NewCompositionRevision(comp, latestRev+1)); err != nil {
 		log.Debug(errCreateRev, "error", err)
 		r.record.Event(comp, event.Warning(reasonCreateRev, err))
+
 		return reconcile.Result{}, errors.Wrap(err, errCreateRev)
 	}
 
 	log.Debug("Created new revision", "revision", latestRev+1)
 	r.record.Event(comp, event.Normal(reasonCreateRev, "Created new revision", "revision", strconv.FormatInt(latestRev+1, 10)))
+
 	return reconcile.Result{}, nil
 }

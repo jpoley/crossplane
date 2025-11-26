@@ -34,16 +34,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/crossplane/crossplane-runtime/pkg/errors"
-	"github.com/crossplane/crossplane-runtime/pkg/event"
-	"github.com/crossplane/crossplane-runtime/pkg/logging"
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
-	"github.com/crossplane/crossplane-runtime/pkg/ratelimiter"
-	"github.com/crossplane/crossplane-runtime/pkg/resource"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/errors"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/meta"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 
-	v1 "github.com/crossplane/crossplane/apis/pkg/v1"
-	"github.com/crossplane/crossplane/internal/controller/rbac/controller"
-	"github.com/crossplane/crossplane/internal/controller/rbac/provider/roles"
+	v1 "github.com/crossplane/crossplane/v2/apis/pkg/v1"
+	"github.com/crossplane/crossplane/v2/internal/controller/rbac/controller"
+	"github.com/crossplane/crossplane/v2/internal/controller/rbac/provider/roles"
 )
 
 const (
@@ -69,7 +68,7 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 
 	r := NewReconciler(mgr,
 		WithLogger(o.Logger.WithValues("controller", name)),
-		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))))
+		WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name), o.EventFilterFunctions...)))
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
@@ -77,7 +76,7 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 		Owns(&rbacv1.ClusterRoleBinding{}).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), &v1.ProviderRevision{})).
 		WithOptions(o.ForControllerRuntime()).
-		Complete(ratelimiter.NewReconciler(name, errors.WithSilentRequeueOnConflict(r), o.GlobalRateLimiter))
+		Complete(errors.WithSilentRequeueOnConflict(r))
 }
 
 // ReconcilerOption is used to configure the Reconciler.
@@ -121,6 +120,7 @@ func NewReconciler(mgr manager.Manager, opts ...ReconcilerOption) *Reconciler {
 	for _, f := range opts {
 		f(r)
 	}
+
 	return r
 }
 
@@ -172,6 +172,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if err := r.client.List(ctx, l); err != nil {
 		err = errors.Wrap(err, errDeployments)
 		r.record.Event(pr, event.Warning(reasonBind, err))
+
 		return reconcile.Result{}, err
 	}
 
@@ -180,6 +181,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// and relatively harmless for us to handle there being many.
 	subjects := make([]rbacv1.Subject, 0)
 	subjectStrings := make([]string, 0)
+
 	for _, d := range l.Items {
 		for _, ref := range d.GetOwnerReferences() {
 			if ref.UID == pr.GetUID() {
@@ -217,17 +219,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		"subjects", subjects,
 	)
 
-	err := r.client.Apply(ctx, rb, resource.MustBeControllableBy(pr.GetUID()), resource.AllowUpdateIf(ClusterRoleBindingsDiffer))
+	err := r.client.Applicator.Apply(ctx, rb, resource.MustBeControllableBy(pr.GetUID()), resource.AllowUpdateIf(ClusterRoleBindingsDiffer))
 	if resource.IsNotAllowed(err) {
 		log.Debug("Skipped no-op ClusterRoleBinding apply")
 		return reconcile.Result{}, nil
 	}
+
 	if err != nil {
 		if kerrors.IsConflict(err) {
 			return reconcile.Result{Requeue: true}, nil
 		}
+
 		err = errors.Wrap(err, errApplyBinding)
 		r.record.Event(pr, event.Warning(reasonBind, err))
+
 		return reconcile.Result{}, err
 	}
 
@@ -245,5 +250,6 @@ func ClusterRoleBindingsDiffer(current, desired runtime.Object) bool {
 	// error. If it happens, we probably do want to panic.
 	c := current.(*rbacv1.ClusterRoleBinding) //nolint:forcetypeassert // See above.
 	d := desired.(*rbacv1.ClusterRoleBinding) //nolint:forcetypeassert // See above.
+
 	return !cmp.Equal(c.Subjects, d.Subjects) || !cmp.Equal(c.RoleRef, d.RoleRef) || !cmp.Equal(c.GetOwnerReferences(), d.GetOwnerReferences())
 }
